@@ -2000,6 +2000,20 @@ def create_app(
                             raise ValueError("photo frame is not a JPEG")
                         entry["latest_photo"] = photo
                         photo_pending = False
+                    elif not (len(data) >= 2 and data[1] == 0):
+                        # Not a bridge frame (no magic) and not a
+                        # plausible legacy frame either: a legacy
+                        # header starts with the low bytes of a small
+                        # seg_idx, so its second byte is 0. Anything
+                        # else is a bridge frame with corrupted magic
+                        # and is dropped whole (PROTOCOL.md section 4).
+                        entry["malformed_frames"] = (
+                            int(entry.get("malformed_frames") or 0) + 1
+                        )
+                        await send_error(
+                            "BAD_PROTOCOL", "bad binary frame magic; frame dropped"
+                        )
+                        continue
                     else:
                         # Legacy frame: 16 byte "<IIQ" header plus PCM.
                         if len(data) > MAX_AUDIO_FRAME_BYTES + AUDIO_HEADER.size:

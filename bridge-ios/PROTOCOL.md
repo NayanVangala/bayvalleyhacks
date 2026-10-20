@@ -129,6 +129,43 @@ keep the connection warm and to track clock offset (section 8).
 }
 ```
 
+#### session_start
+
+Sent once after the handshake, when the session is armed on the
+phone. Fields: `session_id`, `started_at` (ISO 8601 wall clock),
+`talk_mode` (`push_to_talk`).
+
+#### session_pause and session_resume
+
+Sent when the wearer pauses or resumes the session. Each carries
+only `session_id`. A pause seals the open segment server side and
+opens an explicit pause gap record on the session timeline; a
+resume closes the gap. Segments never span a pause.
+
+#### photo_meta
+
+Sent immediately before each photo binary frame (the eagerness
+declaration referenced in section 5.2). Fields: `session_id`,
+`photo_id`, `seq` (the photo sequence, see section 5.2),
+`captured_at` (ISO 8601 wall clock), `eager` (bool), `bytes`
+(JPEG length). The binary frame itself is self describing; this
+message is timing context only.
+
+#### tag_moment
+
+A wearer bookmark for later lookup. Fields: `session_id`,
+`t_mono_ms` (session clock), `source` (the input that produced the
+tag). Pure control message; capture is undisturbed.
+
+#### Legacy control names
+
+The server also accepts the REST-era control vocabulary on the same
+socket (`arm`, `start`, `new_segment`, `talk_stop`, `pause`,
+`resume`, `photo`, `end`, with the legacy binary header described
+in the server module docstring). New bridge clients use the
+messages above; the legacy names exist so older clients and the
+server test suite keep working.
+
 ### 3.2 Server to client
 
 Server messages are parsed by `ServerMessage.parse(_:)` in the app,
@@ -192,6 +229,21 @@ frame. `reason` is informational only.
 - `fatal: true` means the server is about to close the connection and
   the session cannot continue on it. `fatal: false` is a warning; the
   session continues.
+
+#### segments and session_ended (server extension)
+
+The app does not parse these; they exist for other clients of the
+same socket (the dashboard and the server test suite), and the app
+ignores them like any other unrecognized message.
+
+- `segments` is sent after a batch of segments is sealed and
+  processed: `{"type": "segments", "segments": [...], "gaps": [...]}`.
+  The `gaps` array carries the explicit timeline gap records closed
+  since the previous batch (pauses, frame gaps, reconnects), each
+  with the session offset at which it starts.
+- `session_ended` is sent once after `session_end` (or the legacy
+  `end`) has been processed and the session is closed server side:
+  `{"type": "session_ended"}`.
 
 ## 4. Binary frame header
 
