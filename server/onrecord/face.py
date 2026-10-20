@@ -4,10 +4,16 @@ The real implementation wraps insightface's FaceAnalysis (buffalo_l model
 pack, ArcFace) and returns the 512-dim normed embedding of the largest
 face in the image. insightface, cv2, and PIL are heavy and optional, so
 they are lazy-imported inside InsightFaceEmbedder only; this module
-imports cleanly with just the standard library and numpy.
+imports cleanly with just the standard library.
 
 FakeFaceEmbedder is the offline test double used when insightface is not
 installed or ONRECORD_FACE=fake is set.
+
+The fake must never leak into production identity decisions by accident:
+get_face_embedder only falls back to it when the operator explicitly
+opted in (ONRECORD_FACE=fake, ONRECORD_ALLOW_FAKE_EMBEDDERS=1, or
+ONRECORD_REHEARSAL=1). Otherwise a missing insightface install raises,
+so a live run fails loudly instead of matching faces with a hash.
 
 No em-dashes in this codebase. Keep comments plain.
 """
@@ -15,49 +21,78 @@ No em-dashes in this codebase. Keep comments plain.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import sys
 from typing import Optional
-
-import numpy as np
 
 from .interfaces import DIM_FACE
 
 __all__ = [
     "deterministic_embedding",
+    "fake_fallback_allowed",
     "FakeFaceEmbedder",
     "InsightFaceEmbedder",
     "get_face_embedder",
 ]
 
 
+
+def _deterministic_values(seed_bytes: bytes, dim: int) -> list[float]:
+    """Deterministic values in [-1, 1) from sha256(seed_bytes + counter).
+
+    Pure python replacement for the old numpy RandomState expansion, so
+    the fake embedders run with no third party dependencies at all.
+    Identical seeds give identical values; unrelated seeds are near
+    orthogonal after L2 normalization in high dimensions.
+    """
+    values: list[float] = []
+    counter = 0
+    while len(values) < dim:
+        digest = hashlib.sha256(seed_bytes + counter.to_bytes(4, "little")).digest()
+        for offset in range(0, len(digest), 4):
+            if len(values) >= dim:
+                break
+            raw = int.from_bytes(digest[offset:offset + 4], "little")
+            values.append((raw / 4294967296.0) * 2.0 - 1.0)
+        counter += 1
+    return values
+
+
+def _normalize(values: list[float]) -> list[float]:
+    norm = math.sqrt(sum(v * v for v in values))
+    if norm == 0.0:
+        return [0.0] * len(values)
+    return [v / norm for v in values]
+
 def deterministic_embedding(seed_bytes: bytes, dim: int) -> list[float]:
     """Build a deterministic unit vector of length dim from seed_bytes.
 
-    The sha256 digest of the seed is expanded with a counter: each block
-    hashes seed_bytes plus a little-endian counter, seeds a numpy
-    RandomState from the digest, and draws normal floats until dim values
-    exist. The result is L2 normalized, so the dot product of a vector
+    Values come from _deterministic_values (sha256 expansion, pure
+    python), then L2 normalization, so the dot product of a vector
     with itself is 1.0 and unrelated seeds give near-orthogonal vectors.
     Same seed and dim always produce the exact same vector.
     """
     if dim <= 0:
         return []
-    values: list[float] = []
-    counter = 0
-    while len(values) < dim:
-        digest = hashlib.sha256(seed_bytes + counter.to_bytes(4, "little")).digest()
-        seed = int.from_bytes(digest[:4], "little")
-        rng = np.random.RandomState(seed)
-        take = min(128, dim - len(values))
-        values.extend(rng.standard_normal(take).tolist())
-        counter += 1
-    vec = np.asarray(values[:dim], dtype=np.float64)
-    norm = float(np.linalg.norm(vec))
-    if norm == 0.0:
-        return [0.0] * dim
-    vec = vec / norm
-    return [float(x) for x in vec.tolist()]
+    return _normalize(_deterministic_values(seed_bytes, dim))
+
+
+_TRUTHY = frozenset({"1", "true", "yes"})
+
+
+def fake_fallback_allowed() -> bool:
+    """True only when the operator explicitly opted in to test doubles.
+
+    Set ONRECORD_ALLOW_FAKE_EMBEDDERS=1 for offline development, or
+    ONRECORD_REHEARSAL=1 for the quarantined rehearsal fixture. With
+    neither set, a missing real model is an error, never a silent
+    downgrade to hash matching for live identity decisions.
+    """
+    for name in ("ONRECORD_ALLOW_FAKE_EMBEDDERS", "ONRECORD_REHEARSAL"):
+        if os.environ.get(name, "").strip().lower() in _TRUTHY:
+            return True
+    return False
 
 
 class FakeFaceEmbedder:
@@ -73,6 +108,7 @@ class FakeFaceEmbedder:
     """
 
     dim = DIM_FACE
+    is_test_double = True
 
     def embed_image(self, image_bytes: bytes) -> Optional[list[float]]:
         if not image_bytes:
@@ -85,10 +121,12 @@ class InsightFaceEmbedder:
 
     insightface is lazy-imported in the constructor, so constructing this
     class is the point where a missing install raises; get_face_embedder
-    catches that and falls back to FakeFaceEmbedder.
+    handles that, falling back to FakeFaceEmbedder only when test
+    doubles were explicitly allowed.
     """
 
     dim = DIM_FACE
+    is_test_double = False
 
     def __init__(self) -> None:
         from insightface.app import FaceAnalysis
@@ -97,8 +135,10 @@ class InsightFaceEmbedder:
         self._app.prepare(ctx_id=-1, det_size=(640, 640))
 
     @staticmethod
-    def _decode_bgr(image_bytes: bytes) -> Optional[np.ndarray]:
+    def _decode_bgr(image_bytes: bytes):
         """Decode image bytes to a BGR numpy array, or None on failure."""
+        import numpy as np
+
         try:
             import cv2
         except Exception:
@@ -134,6 +174,8 @@ class InsightFaceEmbedder:
         if not faces:
             return None
 
+        import numpy as np
+
         def _area(face) -> float:
             bbox = face.bbox
             return float((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
@@ -141,17 +183,23 @@ class InsightFaceEmbedder:
         best = max(faces, key=_area)
         emb = getattr(best, "normed_embedding", None)
         if emb is None:
-            raw = getattr(best, "embedding", None)
-            if raw is None:
+            emb = getattr(best, "embedding", None)
+            if emb is None:
                 return None
-            vec = np.asarray(raw, dtype=np.float64).ravel()
-            norm = float(np.linalg.norm(vec))
-            if norm == 0.0:
-                return None
-            emb = vec / norm
         vec = np.asarray(emb, dtype=np.float64).ravel()
-        if vec.size == 0:
+        # A print that is not exactly DIM_FACE long, finite, and nonzero
+        # would corrupt or crash the face_prints collection (Chroma
+        # infers the collection dimension from stored vectors), so it is
+        # no usable face at all. Always return a unit vector so stored
+        # prints are comparable no matter which attribute supplied it.
+        if vec.size != DIM_FACE:
             return None
+        if not np.all(np.isfinite(vec)):
+            return None
+        norm = float(np.linalg.norm(vec))
+        if norm == 0.0:
+            return None
+        vec = vec / norm
         return [float(x) for x in vec.tolist()]
 
 
@@ -159,18 +207,31 @@ def get_face_embedder():
     """Return the best available FaceEmbedder.
 
     ONRECORD_FACE=fake forces FakeFaceEmbedder. Otherwise try the real
-    InsightFaceEmbedder; on any failure, warn on stderr and fall back to
-    the fake so the server still runs offline.
+    InsightFaceEmbedder. If the real model cannot load, falling back to
+    the fake would silently turn live identity decisions into hash
+    matching, so the fallback happens only when the operator explicitly
+    opted in to test doubles (see fake_fallback_allowed). Without that
+    opt-in the original failure is raised as a RuntimeError.
     """
     if os.environ.get("ONRECORD_FACE", "").strip().lower() == "fake":
         return FakeFaceEmbedder()
     try:
         return InsightFaceEmbedder()
     except Exception as exc:
+        if not fake_fallback_allowed():
+            raise RuntimeError(
+                "InsightFaceEmbedder unavailable ("
+                + str(exc)
+                + "); refusing to fall back to FakeFaceEmbedder for "
+                "identity decisions. Install insightface, or set "
+                "ONRECORD_FACE=fake or ONRECORD_ALLOW_FAKE_EMBEDDERS=1 "
+                "for an explicit offline test-double run."
+            ) from exc
         print(
             "warning: InsightFaceEmbedder unavailable ("
             + str(exc)
-            + "); falling back to FakeFaceEmbedder",
+            + "); falling back to FakeFaceEmbedder (test doubles "
+            "explicitly allowed)",
             file=sys.stderr,
         )
         return FakeFaceEmbedder()

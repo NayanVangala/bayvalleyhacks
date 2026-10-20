@@ -43,18 +43,21 @@ CREATE TABLE IF NOT EXISTS segments (
 );
 
 -- corrections is append-only: rows are never updated or deleted.
+-- The speaker columns are nullable (an unassign records NULL as the new
+-- speaker) but when set they must name a real person, so a typo can
+-- never write an audit row pointing at nobody.
 CREATE TABLE IF NOT EXISTS corrections (
     id TEXT PRIMARY KEY,
     segment_id TEXT NOT NULL REFERENCES segments(id),
-    old_speaker_person_id TEXT,
-    new_speaker_person_id TEXT,
+    old_speaker_person_id TEXT REFERENCES people(id),
+    new_speaker_person_id TEXT REFERENCES people(id),
     operator_id TEXT NOT NULL DEFAULT 'wearer',
     created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS slack_outbox (
     id TEXT PRIMARY KEY,
-    session_id TEXT,
+    session_id TEXT REFERENCES sessions(id),
     body TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'queued',
     created_at TEXT NOT NULL,

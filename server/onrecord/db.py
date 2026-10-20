@@ -99,6 +99,57 @@ class Store:
     # Connection and schema
     # ------------------------------------------------------------------
 
+    def _open_sqlite(self):
+        """Open a sqlite connection with the pragmas the store needs.
+
+        Foreign keys are off by default in sqlite and the pragma is
+        per connection, so every connection must enable them or the
+        REFERENCES clauses in the schema are decorative. WAL mode and
+        a busy timeout matter because the MCP server runs as a second
+        process against the same database file: without them a write
+        from one process can fail the other with "database is locked"
+        instead of waiting briefly.
+        """
+        path = Path(self._db_path)
+        if str(path) != ":memory:":
+            parent = path.parent
+            if str(parent) not in ("", "."):
+                parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        if str(path) != ":memory:":
+            conn.execute("PRAGMA journal_mode = WAL")
+        return conn
+
+    def _open_connection(self):
+        """Create the raw connection (no schema step). Caller holds the lock."""
+        if self._is_postgres:
+            # Lazy import: psycopg is only needed for Postgres URLs,
+            # so sqlite only installs never pay for it.
+            import psycopg
+            from psycopg.rows import dict_row
+
+            return psycopg.connect(self._database_url, row_factory=dict_row)
+        return self._open_sqlite()
+
+    def _rollback_quietly(self) -> None:
+        """Roll back the current transaction, ignoring secondary errors.
+
+        Needed after any failed statement: on Postgres a failed
+        statement aborts the whole transaction, and every later
+        command on the shared connection then fails with "current
+        transaction is aborted" until a rollback happens. Without
+        this, one bad write (for example a foreign key violation)
+        poisons the store for the rest of the process lifetime.
+        """
+        if self._conn is not None:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+
     def _connect(self):
         """Create the underlying connection if it does not exist yet.
 
@@ -107,28 +158,7 @@ class Store:
         """
         if self._conn is not None:
             return self._conn
-        if self._is_postgres:
-            # Lazy import: psycopg is only needed for Postgres URLs,
-            # so sqlite only installs never pay for it.
-            import psycopg
-            from psycopg.rows import dict_row
-
-            self._conn = psycopg.connect(
-                self._database_url, row_factory=dict_row
-            )
-        else:
-            path = Path(self._db_path)
-            if str(path) != ":memory:":
-                parent = path.parent
-                if str(parent) not in ("", "."):
-                    parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(path), check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            try:
-                conn.execute("PRAGMA foreign_keys = ON")
-            except Exception:
-                pass
-            self._conn = conn
+        self._conn = self._open_connection()
         self.init_schema()
         return self._conn
 
@@ -149,28 +179,7 @@ class Store:
             if self._conn is None:
                 # Inline the connect step so init_schema can be the
                 # public entry point without recursing into itself.
-                if self._is_postgres:
-                    import psycopg
-                    from psycopg.rows import dict_row
-
-                    self._conn = psycopg.connect(
-                        self._database_url, row_factory=dict_row
-                    )
-                else:
-                    path = Path(self._db_path)
-                    if str(path) != ":memory:":
-                        parent = path.parent
-                        if str(parent) not in ("", "."):
-                            parent.mkdir(parents=True, exist_ok=True)
-                    conn = sqlite3.connect(
-                        str(path), check_same_thread=False
-                    )
-                    conn.row_factory = sqlite3.Row
-                    try:
-                        conn.execute("PRAGMA foreign_keys = ON")
-                    except Exception:
-                        pass
-                    self._conn = conn
+                self._conn = self._open_connection()
 
             preferred = (
                 _PACKAGE_DIR / "schema.sql"
@@ -203,6 +212,9 @@ class Store:
                 else:
                     cursor.executescript(sql)
                 self._conn.commit()
+            except Exception:
+                self._rollback_quietly()
+                raise
             finally:
                 cursor.close()
             self._schema_ready = True
@@ -250,6 +262,9 @@ class Store:
         try:
             cursor.execute(self._translate(sql), tuple(params))
             row = cursor.fetchone()
+        except Exception:
+            self._rollback_quietly()
+            raise
         finally:
             cursor.close()
         return self._to_dict(row)
@@ -260,6 +275,9 @@ class Store:
         try:
             cursor.execute(self._translate(sql), tuple(params))
             rows = cursor.fetchall()
+        except Exception:
+            self._rollback_quietly()
+            raise
         finally:
             cursor.close()
         return [self._to_dict(row) for row in rows]
@@ -270,6 +288,9 @@ class Store:
         try:
             cursor.execute(self._translate(sql), tuple(params))
             conn.commit()
+        except Exception:
+            self._rollback_quietly()
+            raise
         finally:
             cursor.close()
 
@@ -335,6 +356,45 @@ class Store:
         with self._lock:
             row = self._fetchone("SELECT COUNT(*) AS n FROM people")
             return int(row["n"]) if row else 0
+
+    def delete_person(self, person_id) -> Optional[dict]:
+        """Delete a person and the data that identifies them.
+
+        Removes every segment attributed to the person, every
+        correction row that touches one of those segments or names
+        this person as the old or new speaker, and finally the person
+        row itself. Returns {"person_id", "segment_ids"} so the
+        caller can purge the matching vector prints and transcript
+        chunks (the vector store lives outside this module), or None
+        when the person does not exist.
+        """
+        with self._lock:
+            if self.get_person(person_id) is None:
+                return None
+            rows = self._fetchall(
+                "SELECT id FROM segments WHERE speaker_person_id = ?",
+                (person_id,),
+            )
+            segment_ids = [row["id"] for row in rows]
+            for segment_id in segment_ids:
+                self._execute_write(
+                    "DELETE FROM corrections WHERE segment_id = ?",
+                    (segment_id,),
+                )
+            self._execute_write(
+                "DELETE FROM corrections"
+                " WHERE old_speaker_person_id = ?"
+                " OR new_speaker_person_id = ?",
+                (person_id, person_id),
+            )
+            self._execute_write(
+                "DELETE FROM segments WHERE speaker_person_id = ?",
+                (person_id,),
+            )
+            self._execute_write(
+                "DELETE FROM people WHERE id = ?", (person_id,)
+            )
+            return {"person_id": person_id, "segment_ids": segment_ids}
 
     # ------------------------------------------------------------------
     # Sessions
@@ -502,6 +562,13 @@ class Store:
         wildcards. Results are newest first.
         """
         with self._lock:
+            # Clamp the limit: sqlite treats a negative LIMIT as
+            # "no limit" while Postgres rejects it outright, so a
+            # negative caller value would silently return every row
+            # on one dialect and crash on the other.
+            limit = max(0, int(limit))
+            if limit == 0:
+                return []
             escaped = (
                 str(term)
                 .replace("\\", "\\\\")
@@ -513,7 +580,7 @@ class Store:
                 "SELECT * FROM segments"
                 " WHERE lower(text) LIKE lower(?) ESCAPE '\\'"
                 " ORDER BY created_at DESC LIMIT ?",
-                (pattern, int(limit)),
+                (pattern, limit),
             )
 
     # ------------------------------------------------------------------
