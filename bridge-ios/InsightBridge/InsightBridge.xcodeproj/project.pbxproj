@@ -1,0 +1,588 @@
+// !$*UTF8*$!
+// InsightBridge project file.
+// Meta Wearables Device Access Toolkit version decision:
+// Findr pinned DAT iOS SDK 0.7.0. This project targets toolkit 1.0,
+// pinned to 1.0.1 or later within 1.x (upToNextMajorVersion from 1.0.1).
+// Version 1.0.0 is excluded on purpose: it had a camera frame freeze bug.
+// Do not lower the minimum to 1.0.0.
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B10000000000000000000027 /* InsightBridgeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000026 /* InsightBridgeApp.swift */; };
+		B10000000000000000000029 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000028 /* AppCoordinator.swift */; };
+		B1000000000000000000002B /* MediaTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000002A /* MediaTypes.swift */; };
+		B1000000000000000000002D /* CaptureSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000002C /* CaptureSource.swift */; };
+		B1000000000000000000002F /* SessionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000002E /* SessionState.swift */; };
+		B10000000000000000000031 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000030 /* Config.swift */; };
+		B10000000000000000000033 /* GlassesSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000032 /* GlassesSource.swift */; };
+		B10000000000000000000035 /* DATRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000034 /* DATRegistration.swift */; };
+		B10000000000000000000037 /* PhoneSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000036 /* PhoneSource.swift */; };
+		B10000000000000000000039 /* MockSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000038 /* MockSource.swift */; };
+		B1000000000000000000003B /* SessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003A /* SessionManager.swift */; };
+		B1000000000000000000003D /* InputMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003C /* InputMapper.swift */; };
+		B1000000000000000000003F /* PreRollBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003E /* PreRollBuffer.swift */; };
+		B10000000000000000000041 /* PTTController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000040 /* PTTController.swift */; };
+		B10000000000000000000043 /* WireProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000042 /* WireProtocol.swift */; };
+		B10000000000000000000045 /* WSClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000044 /* WSClient.swift */; };
+		B10000000000000000000047 /* OfflineStaging.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000046 /* OfflineStaging.swift */; };
+		B10000000000000000000049 /* EnrollmentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000048 /* EnrollmentView.swift */; };
+		B1000000000000000000004B /* EnrollmentViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000004A /* EnrollmentViewModel.swift */; };
+		B1000000000000000000004D /* EnrollmentAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000004C /* EnrollmentAPI.swift */; };
+		B1000000000000000000004F /* VoiceSampleRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000004E /* VoiceSampleRecorder.swift */; };
+		B10000000000000000000051 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000050 /* RootView.swift */; };
+		B10000000000000000000053 /* SessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000052 /* SessionView.swift */; };
+		B10000000000000000000055 /* KillSwitchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000054 /* KillSwitchView.swift */; };
+		B10000000000000000000057 /* StatusBannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000056 /* StatusBannerView.swift */; };
+		B10000000000000000000059 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000058 /* SettingsView.swift */; };
+		B1000000000000000000005B /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000005A /* PairingView.swift */; };
+		B2000000000000000000005D /* WireProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000005C /* WireProtocolTests.swift */; };
+		B2000000000000000000005F /* PreRollBufferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000005E /* PreRollBufferTests.swift */; };
+		B20000000000000000000061 /* SessionStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000060 /* SessionStateTests.swift */; };
+		B10000000000000000000065 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000064 /* Assets.xcassets */; };
+		B30000000000000000000067 /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = DD0000000000000000000011 /* MWDATCore */; };
+		B30000000000000000000068 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = DD0000000000000000000012 /* MWDATCamera */; };
+		B30000000000000000000069 /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = DD0000000000000000000013 /* MWDATMockDevice */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		EE0000000000000000000015 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB0000000000000000000008;
+			remoteInfo = InsightBridge;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		AA0000000000000000000006 /* InsightBridge.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = InsightBridge.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000007 /* InsightBridgeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = InsightBridgeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000026 /* InsightBridgeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightBridgeApp.swift; sourceTree = "<group>"; };
+		A10000000000000000000028 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
+		A1000000000000000000002A /* MediaTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaTypes.swift; sourceTree = "<group>"; };
+		A1000000000000000000002C /* CaptureSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSource.swift; sourceTree = "<group>"; };
+		A1000000000000000000002E /* SessionState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionState.swift; sourceTree = "<group>"; };
+		A10000000000000000000030 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
+		A10000000000000000000032 /* GlassesSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassesSource.swift; sourceTree = "<group>"; };
+		A10000000000000000000034 /* DATRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DATRegistration.swift; sourceTree = "<group>"; };
+		A10000000000000000000036 /* PhoneSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSource.swift; sourceTree = "<group>"; };
+		A10000000000000000000038 /* MockSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockSource.swift; sourceTree = "<group>"; };
+		A1000000000000000000003A /* SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManager.swift; sourceTree = "<group>"; };
+		A1000000000000000000003C /* InputMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMapper.swift; sourceTree = "<group>"; };
+		A1000000000000000000003E /* PreRollBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreRollBuffer.swift; sourceTree = "<group>"; };
+		A10000000000000000000040 /* PTTController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTTController.swift; sourceTree = "<group>"; };
+		A10000000000000000000042 /* WireProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireProtocol.swift; sourceTree = "<group>"; };
+		A10000000000000000000044 /* WSClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WSClient.swift; sourceTree = "<group>"; };
+		A10000000000000000000046 /* OfflineStaging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineStaging.swift; sourceTree = "<group>"; };
+		A10000000000000000000048 /* EnrollmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrollmentView.swift; sourceTree = "<group>"; };
+		A1000000000000000000004A /* EnrollmentViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrollmentViewModel.swift; sourceTree = "<group>"; };
+		A1000000000000000000004C /* EnrollmentAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrollmentAPI.swift; sourceTree = "<group>"; };
+		A1000000000000000000004E /* VoiceSampleRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSampleRecorder.swift; sourceTree = "<group>"; };
+		A10000000000000000000050 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		A10000000000000000000052 /* SessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionView.swift; sourceTree = "<group>"; };
+		A10000000000000000000054 /* KillSwitchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KillSwitchView.swift; sourceTree = "<group>"; };
+		A10000000000000000000056 /* StatusBannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBannerView.swift; sourceTree = "<group>"; };
+		A10000000000000000000058 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A1000000000000000000005A /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		A2000000000000000000005C /* WireProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireProtocolTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000005E /* PreRollBufferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreRollBufferTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000060 /* SessionStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStateTests.swift; sourceTree = "<group>"; };
+		A10000000000000000000062 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A10000000000000000000064 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A10000000000000000000066 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		CC000000000000000000000B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B30000000000000000000067 /* MWDATCore in Frameworks */,
+				B30000000000000000000068 /* MWDATCamera in Frameworks */,
+				B30000000000000000000069 /* MWDATMockDevice in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC000000000000000000000E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AA0000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000004 /* InsightBridge */,
+				AA0000000000000000000005 /* InsightBridgeTests */,
+				AA0000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000006 /* InsightBridge.app */,
+				AA0000000000000000000007 /* InsightBridgeTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000004 /* InsightBridge */ = {
+			isa = PBXGroup;
+			children = (
+				AA000000000000000000001F /* App */,
+				AA0000000000000000000020 /* Common */,
+				AA0000000000000000000021 /* Sources */,
+				AA0000000000000000000022 /* Session */,
+				AA0000000000000000000023 /* Net */,
+				AA0000000000000000000024 /* Enrollment */,
+				AA0000000000000000000025 /* UI */,
+				A10000000000000000000062 /* Info.plist */,
+				A10000000000000000000064 /* Assets.xcassets */,
+				A10000000000000000000066 /* Config.xcconfig */,
+			);
+			path = InsightBridge;
+			sourceTree = "<group>";
+		};
+		AA000000000000000000001F /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000026 /* InsightBridgeApp.swift */,
+				A10000000000000000000028 /* AppCoordinator.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000020 /* Common */ = {
+			isa = PBXGroup;
+			children = (
+				A1000000000000000000002A /* MediaTypes.swift */,
+				A1000000000000000000002C /* CaptureSource.swift */,
+				A1000000000000000000002E /* SessionState.swift */,
+				A10000000000000000000030 /* Config.swift */,
+			);
+			path = Common;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000021 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000032 /* GlassesSource.swift */,
+				A10000000000000000000034 /* DATRegistration.swift */,
+				A10000000000000000000036 /* PhoneSource.swift */,
+				A10000000000000000000038 /* MockSource.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000022 /* Session */ = {
+			isa = PBXGroup;
+			children = (
+				A1000000000000000000003A /* SessionManager.swift */,
+				A1000000000000000000003C /* InputMapper.swift */,
+				A1000000000000000000003E /* PreRollBuffer.swift */,
+				A10000000000000000000040 /* PTTController.swift */,
+			);
+			path = Session;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000023 /* Net */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000042 /* WireProtocol.swift */,
+				A10000000000000000000044 /* WSClient.swift */,
+				A10000000000000000000046 /* OfflineStaging.swift */,
+			);
+			path = Net;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000024 /* Enrollment */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000048 /* EnrollmentView.swift */,
+				A1000000000000000000004A /* EnrollmentViewModel.swift */,
+				A1000000000000000000004C /* EnrollmentAPI.swift */,
+				A1000000000000000000004E /* VoiceSampleRecorder.swift */,
+			);
+			path = Enrollment;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000025 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000050 /* RootView.swift */,
+				A10000000000000000000052 /* SessionView.swift */,
+				A10000000000000000000054 /* KillSwitchView.swift */,
+				A10000000000000000000056 /* StatusBannerView.swift */,
+				A10000000000000000000058 /* SettingsView.swift */,
+				A1000000000000000000005A /* PairingView.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000005 /* InsightBridgeTests */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000005C /* WireProtocolTests.swift */,
+				A2000000000000000000005E /* PreRollBufferTests.swift */,
+				A20000000000000000000060 /* SessionStateTests.swift */,
+			);
+			path = InsightBridgeTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		BB0000000000000000000008 /* InsightBridge */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF0000000000000000000017 /* Build configuration list for PBXNativeTarget "InsightBridge" */;
+			buildPhases = (
+				CC000000000000000000000A /* Sources */,
+				CC000000000000000000000B /* Frameworks */,
+				CC000000000000000000000C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = InsightBridge;
+			packageProductDependencies = (
+				DD0000000000000000000011 /* MWDATCore */,
+				DD0000000000000000000012 /* MWDATCamera */,
+				DD0000000000000000000013 /* MWDATMockDevice */,
+			);
+			productName = InsightBridge;
+			productReference = AA0000000000000000000006 /* InsightBridge.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BB0000000000000000000009 /* InsightBridgeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF0000000000000000000018 /* Build configuration list for PBXNativeTarget "InsightBridgeTests" */;
+			buildPhases = (
+				CC000000000000000000000D /* Sources */,
+				CC000000000000000000000E /* Frameworks */,
+				CC000000000000000000000F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EE0000000000000000000014 /* PBXTargetDependency */,
+			);
+			name = InsightBridgeTests;
+			productName = InsightBridgeTests;
+			productReference = AA0000000000000000000007 /* InsightBridgeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					BB0000000000000000000008 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					BB0000000000000000000009 = {
+						CreatedOnToolsVersion = 15.0;
+						TestTargetID = BB0000000000000000000008;
+					};
+				};
+			};
+			buildConfigurationList = FF0000000000000000000016 /* Build configuration list for PBXProject "InsightBridge" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA0000000000000000000002;
+			packageReferences = (
+				DD0000000000000000000010 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */,
+			);
+			productRefGroup = AA0000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				BB0000000000000000000008 /* InsightBridge */,
+				BB0000000000000000000009 /* InsightBridgeTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		CC000000000000000000000C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000065 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC000000000000000000000F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		CC000000000000000000000A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000027 /* InsightBridgeApp.swift in Sources */,
+				B10000000000000000000029 /* AppCoordinator.swift in Sources */,
+				B1000000000000000000002B /* MediaTypes.swift in Sources */,
+				B1000000000000000000002D /* CaptureSource.swift in Sources */,
+				B1000000000000000000002F /* SessionState.swift in Sources */,
+				B10000000000000000000031 /* Config.swift in Sources */,
+				B10000000000000000000033 /* GlassesSource.swift in Sources */,
+				B10000000000000000000035 /* DATRegistration.swift in Sources */,
+				B10000000000000000000037 /* PhoneSource.swift in Sources */,
+				B10000000000000000000039 /* MockSource.swift in Sources */,
+				B1000000000000000000003B /* SessionManager.swift in Sources */,
+				B1000000000000000000003D /* InputMapper.swift in Sources */,
+				B1000000000000000000003F /* PreRollBuffer.swift in Sources */,
+				B10000000000000000000041 /* PTTController.swift in Sources */,
+				B10000000000000000000043 /* WireProtocol.swift in Sources */,
+				B10000000000000000000045 /* WSClient.swift in Sources */,
+				B10000000000000000000047 /* OfflineStaging.swift in Sources */,
+				B10000000000000000000049 /* EnrollmentView.swift in Sources */,
+				B1000000000000000000004B /* EnrollmentViewModel.swift in Sources */,
+				B1000000000000000000004D /* EnrollmentAPI.swift in Sources */,
+				B1000000000000000000004F /* VoiceSampleRecorder.swift in Sources */,
+				B10000000000000000000051 /* RootView.swift in Sources */,
+				B10000000000000000000053 /* SessionView.swift in Sources */,
+				B10000000000000000000055 /* KillSwitchView.swift in Sources */,
+				B10000000000000000000057 /* StatusBannerView.swift in Sources */,
+				B10000000000000000000059 /* SettingsView.swift in Sources */,
+				B1000000000000000000005B /* PairingView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC000000000000000000000D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B2000000000000000000005D /* WireProtocolTests.swift in Sources */,
+				B2000000000000000000005F /* PreRollBufferTests.swift in Sources */,
+				B20000000000000000000061 /* SessionStateTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		EE0000000000000000000014 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB0000000000000000000008 /* InsightBridge */;
+			targetProxy = EE0000000000000000000015 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		FF0000000000000000000019 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				SWIFT_VERSION = 5.9;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		FF000000000000000000001A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				SWIFT_VERSION = 5.9;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		FF000000000000000000001B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A10000000000000000000066 /* Config.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "$(DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = InsightBridge/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nayan.insightbridge;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FF000000000000000000001C /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A10000000000000000000066 /* Config.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "$(DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = InsightBridge/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nayan.insightbridge;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		FF000000000000000000001D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nayan.insightbridge.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/InsightBridge.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/InsightBridge";
+			};
+			name = Debug;
+		};
+		FF000000000000000000001E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nayan.insightbridge.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/InsightBridge.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/InsightBridge";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		FF0000000000000000000016 /* Build configuration list for PBXProject "InsightBridge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF0000000000000000000019 /* Debug */,
+				FF000000000000000000001A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FF0000000000000000000017 /* Build configuration list for PBXNativeTarget "InsightBridge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF000000000000000000001B /* Debug */,
+				FF000000000000000000001C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FF0000000000000000000018 /* Build configuration list for PBXNativeTarget "InsightBridgeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF000000000000000000001D /* Debug */,
+				FF000000000000000000001E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		DD0000000000000000000010 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/facebook/meta-wearables-dat-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DD0000000000000000000011 /* MWDATCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DD0000000000000000000010 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATCore;
+		};
+		DD0000000000000000000012 /* MWDATCamera */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DD0000000000000000000010 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATCamera;
+		};
+		DD0000000000000000000013 /* MWDATMockDevice */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DD0000000000000000000010 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATMockDevice;
+		};
+/* End XCSwiftPackageProductDependency section */
+
+	};
+	rootObject = AA0000000000000000000001 /* Project object */;
+}

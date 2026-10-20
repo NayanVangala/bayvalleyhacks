@@ -1,0 +1,24 @@
+// Config.xcconfig
+// InsightBridge base configuration.
+//
+// Meta Wearables Device Access Toolkit version decision:
+// Findr pinned DAT iOS SDK 0.7.0. This project targets toolkit 1.0,
+// pinned in the Xcode project to 1.0.1 or later within 1.x.
+// Version 1.0.0 is excluded on purpose: it had a camera frame freeze bug.
+//
+// Secrets and team settings:
+// ClientToken comes from build variables, NEVER hardcoded in source,
+// in this file, in Info.plist literals, or in git.
+// Set META_CLIENT_TOKEN in a local, uncommitted xcconfig or in the
+// Xcode scheme environment for local development, and in CI secrets
+// for release builds. Leave it empty in the committed file.
+// Dev mode uses MetaAppID 0 in Info.plist, which skips app registration.
+// A real MetaAppID and a real ClientToken are only needed for a
+// registered, non-dev build.
+//
+// DEVELOPMENT_TEAM is also left empty in the committed file.
+// Set it locally to your Apple Developer team id when signing.
+
+META_CLIENT_TOKEN =
+DEVELOPMENT_TEAM =
+SERVER_HOST = 192.168.2.1

@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>InsightBridge</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchStoryboardName</key>
+	<string></string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>MWDAT</key>
+	<dict>
+		<key>AppLinkURLScheme</key>
+		<string>insightbridge</string>
+		<key>MetaAppID</key>
+		<integer>0</integer>
+		<key>ClientToken</key>
+		<string>$(META_CLIENT_TOKEN)</string>
+		<key>TeamID</key>
+		<string>$(DEVELOPMENT_TEAM)</string>
+	</dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.nayan.insightbridge.meta-callback</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>insightbridge</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>fb-viewapp</string>
+	</array>
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<string>com.meta.ar.wearable</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-peripheral</string>
+		<string>external-accessory</string>
+		<string>audio</string>
+	</array>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>InsightBridge uses Bluetooth to connect to your Ray-Ban Meta glasses so it can receive audio and photos during a session you start.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>InsightBridge uses the microphone as a backup audio source when glasses audio is unavailable, and to record short voice samples you choose to enroll.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>InsightBridge uses the camera as a backup photo source when glasses photos are unavailable, and only during a session you start.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>InsightBridge connects to the OnRecord server running on your laptop on your local network to send session audio and photos.</string>
+	<key>OnRecordServerHost</key>
+	<string>$(SERVER_HOST)</string>
+	<key>OnRecordServerPort</key>
+	<integer>8000</integer>
+</dict>
+</plist>
