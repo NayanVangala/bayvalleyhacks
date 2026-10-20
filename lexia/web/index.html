@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lexia Read Mode (preview)</title>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header>
+<h1>Lexia Read Mode (preview)</h1>
+</header>
+<main>
+<p>This is an unstyled functional preview of Lexia Read Mode. It uses plain browser default rendering on purpose, with no design applied yet. Pick an image of text, run Read, browse the returned chunks one at a time in the reader area, and use Read aloud to hear the result.</p>
+
+<section aria-label="Read controls">
+<p>
+<label for="apiBase">API base URL</label><br>
+<input type="text" id="apiBase" value="http://localhost:8100" size="40">
+</p>
+<p>
+<label for="imageFile">Image of text</label><br>
+<input type="file" id="imageFile" accept="image/*">
+</p>
+<p>
+<label for="simplify">
+<input type="checkbox" id="simplify">
+Simplify
+</label>
+</p>
+<p>
+<button type="button" id="readButton">Read</button>
+</p>
+<p id="status" role="status" aria-live="polite"></p>
+</section>
+
+<section id="results" aria-label="Results">
+<h2>Results</h2>
+<p>Engine: <span id="resultEngine"></span></p>
+<p>Confidence: <span id="resultConfidence"></span></p>
+<p>Session: <span id="resultSession"></span></p>
+
+<h3>Full text</h3>
+<p id="fullText">No text yet.</p>
+
+<h3>All chunks</h3>
+<ol id="chunkList"></ol>
+</section>
+
+<section id="reader" aria-label="Reader">
+<h3>Reader</h3>
+<h2 id="readerChunk">No chunk selected yet.</h2>
+<p id="readerPosition"></p>
+<p>
+<button type="button" id="prevButton" disabled>Previous</button>
+<button type="button" id="nextButton" disabled>Next</button>
+</p>
+<p>
+<button type="button" id="speakButton" disabled>Read aloud</button>
+</p>
+<p id="speakInfo"></p>
+<p>
+<audio id="audioPlayer" controls></audio>
+</p>
+</section>
+</main>
+</body>
+</html>
