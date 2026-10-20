@@ -18,6 +18,12 @@ When allowed it:
   "what did Maya say about the budget",
 - ends the session and prints a JSON summary.
 
+Rerunning the seed is safe: it is idempotent. People are matched by
+name and their face and voice prints are refreshed in place, the
+rehearsal session is matched by title, and existing segments are
+reused by sequence number instead of duplicated. A rerun after a
+crash mid-seed completes the fixture instead of doubling it.
+
 Run it with:
     ONRECORD_REHEARSAL=1 python3 -m onrecord.seed
 """
@@ -131,15 +137,29 @@ def _extract_id(result, *keys):
 
 
 def _load_class(module_names, class_name):
-    """Import class_name from the first module in module_names that has it."""
+    """Import class_name from the first module in module_names that has it.
+
+    Modules are resolved relative to this package first, so the class
+    comes from the same package instance as the rest of seed.py even
+    when the package was imported under a different top level name.
+    Loading through a hard coded "onrecord." prefix could silently
+    build a second copy of the package with separate classes.
+    """
+    import importlib
+
     last_error = None
     for module_name in module_names:
-        try:
-            module = __import__(
-                "onrecord." + module_name, fromlist=[class_name]
-            )
-        except ImportError as exc:
-            last_error = exc
+        module = None
+        for target, kwargs in (
+            ("." + module_name, {"package": __package__ or "onrecord"}),
+            ("onrecord." + module_name, {}),
+        ):
+            try:
+                module = importlib.import_module(target, **kwargs)
+                break
+            except ImportError as exc:
+                last_error = exc
+        if module is None:
             continue
         cls = getattr(module, class_name, None)
         if cls is not None:
@@ -199,38 +219,80 @@ def seed(settings) -> dict:
     people_order = []
     for name, photo_bytes, freq_hz in SEED_PEOPLE:
         voice_pcm = _sine_pcm(freq_hz, sample_rate, duration_s=1.0)
-        enrolled = enrollment.enroll_person(
-            name, photo_bytes, voice_pcm, "Rehearsal seed fixture."
-        )
-        person_id = _extract_id(enrolled, "person_id")
-        if person_id is None:
-            raise RuntimeError("enroll_person returned no person id for %r" % name)
+        # Idempotency: a person with this name from an earlier seed
+        # run is reused and their prints are refreshed in place.
+        # Creating a fresh duplicate on every run made name lookups
+        # ambiguous (two Maya Chens) and broke person filtered search.
+        existing = store.find_people_by_name(name)
+        if existing:
+            person_id = _extract_id(existing[0], "person_id")
+            if person_id is None:
+                raise RuntimeError("existing person for %r has no id" % name)
+            enrollment.enroll_face(person_id, photo_bytes)
+            enrollment.enroll_voice(person_id, voice_pcm)
+        else:
+            enrolled = enrollment.enroll_person(
+                name, photo_bytes, voice_pcm, "Rehearsal seed fixture."
+            )
+            person_id = _extract_id(enrolled, "person_id")
+            if person_id is None:
+                raise RuntimeError("enroll_person returned no person id for %r" % name)
         people_ids[name] = person_id
         people_order.append(person_id)
 
-    session_result = store.create_session(SESSION_TITLE, SESSION_SOURCE, True)
-    session_id = _extract_id(session_result, "session_id")
+    # Idempotency: reuse the rehearsal session from an earlier run
+    # (matched by title and the rehearsal flag) instead of adding a
+    # second copy of the same conversation. list_sessions is newest
+    # first, so the last match is the original seed session.
+    session = None
+    for candidate in store.list_sessions():
+        if (
+            candidate.get("title") == SESSION_TITLE
+            and candidate.get("rehearsal")
+        ):
+            session = candidate
+    session_id = None
+    existing_by_seq = {}
+    if session is not None:
+        session_id = _extract_id(session, "session_id")
+        for seg in store.list_segments(session_id):
+            existing_by_seq.setdefault(seg.get("seq"), seg)
     if session_id is None:
-        raise RuntimeError("create_session returned no session id")
+        session_result = store.create_session(SESSION_TITLE, SESSION_SOURCE, True)
+        session_id = _extract_id(session_result, "session_id")
+        if session_id is None:
+            raise RuntimeError("create_session returned no session id")
+        session = store.get_session(session_id)
 
     for seq, (speaker_name, text, avg_logprob) in enumerate(SEED_SEGMENTS):
         start_offset_s = seq * SEGMENT_SECONDS
         end_offset_s = start_offset_s + SEGMENT_SECONDS
-        segment_result = store.add_segment(
-            session_id,
-            seq,
-            text,
-            text,
-            avg_logprob,
-            0.01,
-            GATE_VERIFIED,
-            0,
-            start_offset_s,
-            end_offset_s,
-        )
-        segment_id = _extract_id(segment_result, "segment_id")
-        if segment_id is None:
-            raise RuntimeError("add_segment returned no segment id for seq %d" % seq)
+        existing_seg = existing_by_seq.get(seq)
+        if existing_seg is not None:
+            if existing_seg.get("text") != text:
+                raise RuntimeError(
+                    "seed session %s already has different text at seq %d; "
+                    "refusing to duplicate or overwrite it" % (session_id, seq)
+                )
+            segment_id = _extract_id(existing_seg, "segment_id")
+            if segment_id is None:
+                raise RuntimeError("existing segment at seq %d has no id" % seq)
+        else:
+            segment_result = store.add_segment(
+                session_id,
+                seq,
+                text,
+                text,
+                avg_logprob,
+                0.01,
+                GATE_VERIFIED,
+                0,
+                start_offset_s,
+                end_offset_s,
+            )
+            segment_id = _extract_id(segment_result, "segment_id")
+            if segment_id is None:
+                raise RuntimeError("add_segment returned no segment id for seq %d" % seq)
 
         person_id = people_ids[speaker_name]
         store.set_segment_speaker(
@@ -257,7 +319,10 @@ def seed(settings) -> dict:
             text,
         )
 
-    store.end_session(session_id)
+    # Only end a session that is not ended yet, so a rerun does not
+    # move the ended_at timestamp of the original run.
+    if session is None or session.get("ended_at") is None:
+        store.end_session(session_id)
 
     return {
         "people": people_order,
