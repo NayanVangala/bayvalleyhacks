@@ -29,14 +29,24 @@ def _env_float(name: str, default: float) -> float:
     value = _env_str(name)
     if value is None:
         return default
-    return float(value)
+    try:
+        return float(value)
+    except ValueError:
+        raise ValueError(
+            f"environment variable {name} must be a number, got {value!r}"
+        ) from None
 
 
 def _env_int(name: str, default: int) -> int:
     value = _env_str(name)
     if value is None:
         return default
-    return int(value)
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(
+            f"environment variable {name} must be an integer, got {value!r}"
+        ) from None
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -58,6 +68,7 @@ class Settings:
     data_dir: Path = Path("./data")
     database_url: Optional[str] = None
     chroma_dir: Path = Path("./data/chroma")
+    host: str = "127.0.0.1"
     port: int = 8000
     sample_rate: int = 16000
     face_threshold: float = 0.45
@@ -67,6 +78,32 @@ class Settings:
     stt_model: str = "small.en"
     slack_webhook_url: Optional[str] = None
     rehearsal: bool = False
+
+    def __post_init__(self) -> None:
+        # Thresholds are cosine similarities. A value outside [0, 1]
+        # is always a configuration mistake, and a silent one: above 1
+        # no speaker can ever match (everyone stays Unknown), below 0
+        # unrelated speakers start matching. Fail loudly at startup
+        # instead of failing the demo quietly.
+        for field_name in (
+            "face_threshold",
+            "voice_threshold",
+            "face_only_threshold",
+            "voice_only_threshold",
+        ):
+            value = getattr(self, field_name)
+            if not 0.0 <= float(value) <= 1.0:
+                raise ValueError(
+                    f"{field_name} must be between 0 and 1, got {value!r}"
+                )
+        if int(self.sample_rate) <= 0:
+            raise ValueError(
+                f"sample_rate must be positive, got {self.sample_rate!r}"
+            )
+        if not 0 <= int(self.port) <= 65535:
+            raise ValueError(
+                f"port must be between 0 and 65535, got {self.port!r}"
+            )
 
     @property
     def db_path(self) -> Path:
@@ -78,10 +115,11 @@ class Settings:
 def get_settings() -> Settings:
     """Return the cached settings, creating storage dirs on first call.
 
-    Reads DATABASE_URL, DATA_DIR, CHROMA_DIR, PORT, FACE_THRESHOLD,
-    VOICE_THRESHOLD, FACE_ONLY_THRESHOLD, VOICE_ONLY_THRESHOLD,
-    STT_MODEL, SLACK_WEBHOOK_URL, and ONRECORD_REHEARSAL from the
-    environment. Blank values count as unset.
+    Reads DATABASE_URL, DATA_DIR, CHROMA_DIR, HOST, PORT, SAMPLE_RATE,
+    FACE_THRESHOLD, VOICE_THRESHOLD, FACE_ONLY_THRESHOLD,
+    VOICE_ONLY_THRESHOLD, STT_MODEL, SLACK_WEBHOOK_URL, and
+    ONRECORD_REHEARSAL from the environment. Blank values count as
+    unset.
     """
     data_dir = Path(_env_str("DATA_DIR") or "./data")
 
@@ -92,8 +130,9 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         database_url=_env_str("DATABASE_URL"),
         chroma_dir=chroma_dir,
+        host=_env_str("HOST") or "127.0.0.1",
         port=_env_int("PORT", 8000),
-        sample_rate=16000,
+        sample_rate=_env_int("SAMPLE_RATE", 16000),
         face_threshold=_env_float("FACE_THRESHOLD", 0.45),
         voice_threshold=_env_float("VOICE_THRESHOLD", 0.75),
         face_only_threshold=_env_float("FACE_ONLY_THRESHOLD", 0.60),
