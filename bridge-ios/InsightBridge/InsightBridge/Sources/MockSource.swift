@@ -568,11 +568,15 @@ final class MockSource: CaptureSource {
     func stop() async {
         stateLock.lock()
         if streamsFinished {
+            // Only simulateDeath() finishes the streams, and it is
+            // terminal. A plain stop must stay restartable:
+            // SessionManager holds one MockSource for the whole app
+            // lifetime and reattaches it after failover drills, the
+            // same lifecycle GlassesSource follows.
             stateLock.unlock()
             return
         }
         isRunning = false
-        streamsFinished = true
         stateLock.unlock()
 
         audioTask?.cancel()
@@ -582,8 +586,8 @@ final class MockSource: CaptureSource {
         videoTask = nil
         healthTask = nil
 
-        audioContinuation.finish()
-        videoContinuation.finish()
-        healthContinuation.finish()
+        // Continuations stay open so start() can run again on this
+        // instance. deinit and simulateDeath() are the only paths
+        // that finish them.
     }
 }

@@ -19,9 +19,14 @@ struct InsightBridgeApp: App {
         // A restart applies changed server host and port values.
         let defaults = UserDefaults.standard
 
-        let host = defaults.string(forKey: "onrecord.serverHost") ?? "127.0.0.1"
+        // Fall back to the configured server (Config reads the
+        // SERVER_HOST build setting, default 192.168.2.1 on the demo
+        // network). A 127.0.0.1 fallback here pointed a fresh install
+        // at the phone itself, so the WebSocket could never reach the
+        // laptop while enrollment (which uses Config) worked.
+        let host = defaults.string(forKey: "onrecord.serverHost") ?? Config.serverHost
         let storedPort = defaults.integer(forKey: "onrecord.serverPort")
-        let port = storedPort > 0 ? storedPort : 8000
+        let port = storedPort > 0 ? storedPort : Config.serverPort
         let useMockSource = defaults.bool(forKey: "onrecord.useMockSource")
 
         let registration = DATRegistration()

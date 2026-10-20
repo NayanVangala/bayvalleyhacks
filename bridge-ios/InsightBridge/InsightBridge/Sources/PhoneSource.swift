@@ -137,7 +137,6 @@ final class PhoneSource: NSObject, CaptureSource {
 
     private let lifecycleLock = NSLock()
     private var isRunning = false
-    private var streamsFinished = false
     private var startedAt: Date?
     private var healthTask: Task<Void, Never>?
     private var batteryMonitoringEnabledByUs = false
@@ -220,10 +219,6 @@ final class PhoneSource: NSObject, CaptureSource {
         if isRunning {
             lifecycleLock.unlock()
             return
-        }
-        if streamsFinished {
-            lifecycleLock.unlock()
-            throw PhoneSourceError.notRunning
         }
         lifecycleLock.unlock()
 
@@ -558,12 +553,7 @@ final class PhoneSource: NSObject, CaptureSource {
 
     func stop() async {
         lifecycleLock.lock()
-        if streamsFinished {
-            lifecycleLock.unlock()
-            return
-        }
         isRunning = false
-        streamsFinished = true
         lifecycleLock.unlock()
 
         healthTask?.cancel()
@@ -605,9 +595,12 @@ final class PhoneSource: NSObject, CaptureSource {
             batteryMonitoringEnabledByUs = false
         }
 
-        audioContinuation.finish()
-        videoContinuation.finish()
-        healthContinuation.finish()
+        // The stream continuations are deliberately NOT finished here,
+        // the same rule GlassesSource follows: SessionManager owns one
+        // PhoneSource for the whole app lifetime and starts it again
+        // for the next session and after failover cycles. Finishing
+        // the streams in stop() made every second session in one app
+        // launch fail. deinit finishes them when the source dies.
     }
 }
 

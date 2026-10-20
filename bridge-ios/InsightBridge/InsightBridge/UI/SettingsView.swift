@@ -12,7 +12,7 @@ struct SettingsView: View {
 
     @EnvironmentObject private var sessionManager: SessionManager
 
-    @AppStorage("onrecord.serverHost") private var serverHost: String = "127.0.0.1"
+    @AppStorage("onrecord.serverHost") private var serverHost: String = "192.168.2.1"
     @AppStorage("onrecord.serverPort") private var serverPort: Int = 8000
     @AppStorage("onrecord.preferGlasses") private var preferGlasses: Bool = true
     @AppStorage("onrecord.useMockSource") private var useMockSource: Bool = false

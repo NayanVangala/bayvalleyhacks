@@ -39,15 +39,19 @@ enum Config {
 
     /// Base HTTP URL for the laptop server, for example http://192.168.2.1:8000
     static var httpBaseURL: URL {
-        // Force unwrap is safe here: host and port are controlled above
-        // and this string is always a valid URL by construction.
-        URL(string: "http://\(serverHost):\(serverPort)")!
+        // The host comes from build settings today, but it is one
+        // settings field away from being user editable, and a host
+        // containing spaces or slashes makes URL(string:) return nil.
+        // Fall back to the default server instead of crashing.
+        URL(string: "http://\(serverHost):\(serverPort)")
+            ?? URL(string: "http://192.168.2.1:8000")!
     }
 
     /// WebSocket ingest URL for one session.
     /// Format: ws://host:port/ingest/audio?session_id=<uuid>
     static func wsURL(sessionID: UUID) -> URL {
-        URL(string: "ws://\(serverHost):\(serverPort)/ingest/audio?session_id=\(sessionID.uuidString)")!
+        URL(string: "ws://\(serverHost):\(serverPort)/ingest/audio?session_id=\(sessionID.uuidString)")
+            ?? URL(string: "ws://192.168.2.1:8000/ingest/audio?session_id=\(sessionID.uuidString)")!
     }
 
     /// Enrollment endpoint. The enrollment flow posts face photos and

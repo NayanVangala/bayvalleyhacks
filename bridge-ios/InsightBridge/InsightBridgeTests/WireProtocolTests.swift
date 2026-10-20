@@ -215,7 +215,7 @@ final class WireProtocolTests: XCTestCase {
 
     func testParsePong() {
         let json = """
-        {"type":"pong","t0_mono_ms":4200,"t_mono_ms":4200,"server_time":"2026-10-25T18:02:21.050Z"}
+        {"type":"pong","t0_mono_ms":4200,"server_time":"2026-10-25T18:02:21.050Z"}
         """
         let message = ServerMessage.parse(json)
         XCTAssertTrue(
