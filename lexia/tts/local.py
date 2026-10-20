@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import pathlib
 import shutil
 import subprocess
@@ -35,7 +36,11 @@ class LocalTTSEngine:
 
         out_dir = pathlib.Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / "local_output.wav"
+        # One file per text, named by content hash like FakeTTSEngine.
+        # A single fixed filename made every speak overwrite the last
+        # one, so an earlier session's /audio/ URL served the wrong text.
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        out_path = out_dir / f"local_{digest}.wav"
 
         espeak = shutil.which("espeak")
         if espeak:
