@@ -6,20 +6,22 @@ Date: 2026-10-20. Reviewers: 10 senior-engineer agents (workflow onrecord-review
 
 NO-GO for the glasses demo path today. GO for the laptop-side pipeline.
 
-The server, MCP query layer, dashboard, and digest all work end to end (verified live in the UI pass below, with test doubles for the ML models). But the iOS bridge and the server speak completely different wire protocols, so the glasses cannot complete a single session with this server as shipped. That is one focused fix, not a rebuild: PROTOCOL.md has been corrected to match the server, and the Swift client needs one rewrite pass against it. After that, one real-model run on Nayan's Mac (faster-whisper, ArcFace, ECAPA, real Chroma) is the remaining gate. Every critical bug class the reviewers found is fixed and covered by tests: the suite went from 0 tests at review start to 242 passing.
+The server, MCP query layer, dashboard, and digest all work end to end (verified live in the UI pass below, with test doubles for the ML models). The wire protocol gap that three reviewers flagged has been mostly closed server-side during this review: the server now accepts the bridge protocol as well as its legacy one. What still blocks the glasses path is a short list: the phone never creates its session server-side (the server rejects unknown session ids), Swift enrollment uses the wrong endpoint and encoding, and a flags assignment conflict needs one owner. Those are hours of Swift work, not a rebuild, but they must be verified on a Mac with Xcode. After that, one real-model run on Nayan's Mac (faster-whisper, ArcFace, ECAPA, real Chroma) is the remaining gate. Every critical bug class the reviewers found is fixed and covered by tests: the suite went from 0 tests at review start to 242 passing.
 
-## The one blocker: three protocols, one system
+## The one blocker: protocol reconciliation, mostly done server-side, handshake still open
 
-Found independently by the iOS, realtime, and security reviewers.
+Found independently by the iOS, realtime, and security reviewers. Amended after the realtime reviewer's full report landed: the picture is better than the first draft of this section said. The server now accepts BOTH its legacy protocol and the bridge protocol from PROTOCOL.md (hello/welcome, session_start, talk_start, talk_end, session_pause, session_resume, session_end, ping/pong, photo_meta, tag_moment, magic/kind/big-endian frame parsing, reconnect dedupe). What remains is a short, specific list, mostly on the Swift side:
 
-- Handshake: the server has no hello/welcome. Sessions are created with POST /sessions, then the WebSocket connects with that session id or is closed (4404). The iOS app invents a UUID locally and never calls POST /sessions, so every connect is refused.
-- Control vocabulary: server accepts arm, start, talk_stop, new_segment, pause, resume, photo, end. The bridge sends hello, session_start, talk_start, talk_end, photo_meta, session_pause, session_resume, session_end, ping, tag_moment. Zero overlap.
-- Binary header: the server uses little-endian struct (seg_idx u32, frame_seq u32, capture_ts_ms u64 epoch ms, no magic, no kind, no flags). The bridge sends big-endian with magic bytes, a kind byte, flags, and a u32 session-relative timestamp. Both are 16 bytes by coincidence, so audio payloads land intact while every header field the server reads is garbage.
-- Photos: the server expects a photo text control followed by a raw JPEG binary frame. The bridge sends a photo_meta JSON (rejected) followed by a headered frame that the server fed into the audio pipeline as PCM. No photo ever reached face identification.
-- Enrollment: server is POST /api/enroll with JSON base64 (voice = raw PCM). The bridge posts multipart form data to /enroll with a WAV-wrapped voice file. The dashboard had the same multipart mistake (fixed, see Dashboard).
-- State machines also diverge: iOS models per-press segments; the server models one continuous recording with segment boundaries. Pause, resume, and end transitions differ.
+- Session identity (the hard blocker): the phone generates its own session UUID and never creates the session server-side, but the server rejects unknown session ids with 4404 (pinned by test) while PROTOCOL.md section 1 says the phone creates the id. Either the phone must create the session first (Store.create_session cannot currently take an explicit id) or the server must register sessions on hello. Cross-slice decision, needs one owner.
+- Enrollment: the server has no /enroll route and no multipart support; its JSON API is /api/enroll with base64 (voice = raw PCM). The Swift bridge still posts multipart form data to /enroll with a WAV-wrapped voice file. The dashboard had the same mistake and is fixed (see Dashboard).
+- Flags conflict: PROTOCOL.md section 5.3 says PREROLL is 0x01; Swift after 41e0b39 uses SEGMENT_START 0x01 and PREROLL 0x04. The server treats flags as informational and accepts both as pre-roll hints, and FINAL 0x02 agrees on both sides, but one owner must settle the assignment.
+- PTTController zero-pads partial pre-roll and final frames and emits a full silent frame just to carry FINAL. That contradicts PROTOCOL.md 5.1 and the plan rule that partial pre-roll is flagged, never padded, and inflates segments by up to 100 ms of silence.
+- WSClient reconnect backoff now caps at 30 s; PROTOCOL.md section 6 caps at 16 s.
+- State machine models still differ in shape (iOS per-press segments vs server continuous recording with boundaries), but the server adapter now maps the bridge vocabulary onto its model.
 
-Action taken: PROTOCOL.md was corrected to describe the server as the canonical implementation (commit 6f6fac4 plus the realtime fixes). The Swift-side rewrite is deliberately NOT done by this swarm: it is a focused build task for the bridge, estimated at one session of work, and it must be verified on a Mac with Xcode, which this environment does not have.
+Original incompatibility, for the record: control vocabulary had zero overlap, the binary headers disagreed on endianness, magic, kind, and timestamp width (both 16 bytes by coincidence, so payloads landed while header fields were garbage), and bridge photo frames were fed into the audio pipeline as PCM.
+
+Action taken: PROTOCOL.md corrected and extended to document both the server messages and the bridge vocabulary (6f6fac4, d1e64e6). The remaining Swift-side fixes are deliberately NOT done by this swarm: they need a Mac with Xcode to verify, which this environment does not have.
 
 ## Per-area findings and fixes
 
@@ -79,13 +81,14 @@ Left: list_people on an empty database returns a bare empty list with no reason 
 
 ### 5. Realtime (WebSocket ingest, state machine, pre-roll)
 
-Fixed in 9346994, 4d42971, 58ed73e, b0f4b7d, ec359be; PROTOCOL.md corrected in 6f6fac4. 19 new tests pass.
+Fixed in ec359be (state machine), 19a7019 (the ingest rewrite landed inside the shared-tree security commit), and d1e64e6 (bad-magic frame drop plus PROTOCOL.md documentation). Verified with two custom harnesses (46 plus 9 checks, all pass) on top of the repo suite.
 
-- As committed, the session pipeline was non-functional: the state machine accepted zero legal session flows, sessions created over HTTP were orphaned (the WS handler minted its own controllers), sealed segments were never processed at all, and ingest crashed on the first real JPEG. All fixed: end now seals and processes, audio before arm gets an explicit marker segment instead of a 409, binary frame parsing handles the nested PCM header (the old parser read garbage timestamps from PCM bytes), and the ingest path is behind per-message error containment so one bad frame cannot kill a session.
-- Pause gaps are explicit records; partial pre-roll is flagged, never padded; the two-step end guard exists; sequence numbers survive reconnect.
-- Audio gaps are marked in the timeline instead of silently stitched.
+- As committed, the pipeline was broken at every level: the state machine accepted zero legal session flows, sealed segments were never processed, pause gaps were silent holes that shifted every later timestamp, a runtime rebuild reset the timeline to offset 0 and collided with stored segments, there was no reconnect dedupe (header fields were parsed and discarded, so replayed audio appended twice), and a segment sealed while the pipeline was down was lost with no retry.
+- The ingest rewrite implements the bridge protocol server-side: hello/welcome with protocol and session checks, the full bridge control vocabulary, ping/pong, PROTOCOL.md section 4 frame parsing (magic, kind, big-endian), bridge audio validation (3200 byte frames, short only with FINAL), dedupe on (format, seg_idx, frame_seq, capture_ts_ms, length), capture-clock FRAME_GAP detection, RECONNECT and SOURCE_FAILOVER gap records, a pending sealed queue so a down pipeline cannot lose a segment, a connection supersede token so two sockets cannot interleave into one controller, and session rebuild restoring offset and sequence from stored segments.
+- State machine: pause opens a gap record closed by resume or end with measured duration; SealedSegment carries preroll byte counts and a partial flag (flagged, never padded); empty new_segment raises; two-step request_end/confirm_end guard with debounce; sequence continuity after restart.
+- Gaps are exposed in segments replies, session status, and session detail. They live in runtime payloads only (no gap table in the schema), so a server restart loses gap history although offsets and sequences restore.
 
-Left: the corrected PROTOCOL.md describes the server; the Swift client still implements the old incompatible variant (see The one blocker). Failover behavior is verified server-side only; the glasses-to-phone drill needs hardware.
+Left: the Swift-side items listed in the blocker section (session creation, enrollment shape, flags assignment, PTT padding, backoff cap). The server does not reorder frames inside a segment; it trusts ordered replay and flags capture-clock gaps.
 
 ### 6. Dashboard code
 
@@ -175,7 +178,7 @@ Lexia is a standalone Read Mode service (OCR, reading chunking, TTS) living only
 
 ## Decisions Nayan needs to make
 
-1. Protocol: the server is now canonical (PROTOCOL.md corrected). Approve the Swift client rewrite against it, or declare the bridge spec canonical and move the server instead. Nothing else unblocks the glasses path.
+1. Protocol leftovers: the server now speaks both protocols, so the remaining calls are small but blocking. Decide who owns (a) session creation (phone POSTs first, or server registers on hello; Store.create_session needs explicit-id support for the first option), (b) the PREROLL flag assignment (0x01 per PROTOCOL.md vs 0x04 in Swift), (c) Swift enrollment moving to JSON /api/enroll. Nothing else unblocks the glasses path.
 2. Semantic relevance threshold: with the real embedder, low-positive scores on unrelated queries will still return quotes. Pick a floor after one real-model test session, or accept the behavior and keep the exact-match path as the demo fallback.
 3. Authentication: accept LAN trust strictly on the laptop-hosted private AP (current state), or add a shared token for bridge, dashboard, and server before the event. Never run the server on venue WiFi either way.
 4. Pre-roll disclosure: the 10 second pre-roll captures speech from before the press, including bystanders. Either the consent script in docs/ENROLLMENT-GUIDE.md says so, or the buffer shrinks.
