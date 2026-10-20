@@ -106,6 +106,14 @@ class QueryService:
         """
         if not ref:
             return None, False
+        if isinstance(ref, str):
+            # Surrounding whitespace is a typing artifact, not part of an
+            # id or a name. Without this, " Maya Chen " missed the exact
+            # name match and reported PERSON_NOT_FOUND for an enrolled
+            # person.
+            ref = ref.strip()
+            if not ref:
+                return None, False
 
         try:
             by_id = self.store.get_person(ref)
@@ -125,6 +133,26 @@ class QueryService:
         """Return every enrolled person. People rows are safe as-is."""
         people = self.store.list_people() or []
         return [dict(person) if isinstance(person, dict) else person for person in people]
+
+    def person_candidates(self, ref) -> list:
+        """Candidate people ({id, name}) for an ambiguous name reference.
+
+        Returns every exact case-insensitive name match, so an ambiguous
+        result can name the candidates instead of silently picking one.
+        Returns an empty list when the reference matches nobody by name.
+        """
+        if not ref:
+            return []
+        name = ref.strip() if isinstance(ref, str) else ref
+        try:
+            matches = self.store.find_people_by_name(name) or []
+        except Exception:
+            return []
+        return [
+            {"id": match.get("id"), "name": match.get("name")}
+            for match in matches
+            if isinstance(match, dict)
+        ]
 
     # ------------------------------------------------------------------
     # Hit construction
@@ -183,24 +211,22 @@ class QueryService:
         if ambiguous:
             # Report the candidates, never pick one: the caller must
             # re-ask with a person id (BUILD_PLAN Section 2.6).
-            matches = self.store.find_people_by_name(person_ref) or []
-            candidates = [
-                {"id": match.get("id"), "name": match.get("name")}
-                for match in matches
-                if isinstance(match, dict)
-            ]
-            return None, self._empty(REASON_AMBIGUOUS_NAME, candidates)
+            return None, self._empty(
+                REASON_AMBIGUOUS_NAME, self.person_candidates(person_ref)
+            )
         if person is None:
             return None, self._empty(REASON_PERSON_NOT_FOUND)
         return person, None
 
-    def _no_results_reason(self, person) -> str:
+    def _no_results_reason(self, person, saw_unverified: bool = False) -> str:
         """Reason for a search that kept zero hits.
 
         If a filtered person has segments but none of them are VERIFIED,
         that is reported distinctly from a plain no-match, so a caller can
         tell "nothing was ever verified for them" apart from "verified
-        material exists, it just did not match".
+        material exists, it just did not match". The same applies when the
+        search itself matched material that is all unverified
+        (saw_unverified): the match exists, it is just not quotable.
         """
         if person is not None:
             segments = self.store.segments_for_person(person.get("id")) or []
@@ -208,6 +234,8 @@ class QueryService:
                 seg.get("gate_status") == GATE_VERIFIED for seg in segments
             ):
                 return REASON_NO_VERIFIED
+        if saw_unverified:
+            return REASON_NO_VERIFIED
         return REASON_NO_MATCHES
 
     def _keep_hit(self, seg, score, kept: list) -> None:
@@ -235,13 +263,43 @@ class QueryService:
             return error
         person_id = person.get("id") if person else None
 
+        if not query or not str(query).strip():
+            # A blank query has no embedding signal. Without this guard it
+            # embedded to the zero vector and every chunk tied at score
+            # 0.0, so arbitrary quotes came back as results.
+            return self._empty(REASON_NO_MATCHES)
+
         embedding = self.text_embedder.embed(query)
-        hits = self.vectors.query(COLLECTION_CHUNKS, embedding, n=limit * 3) or []
+        # Scan the whole chunk pool when its size is known. Asking for
+        # only limit * 3 let a run of unverified or other-person chunks
+        # at the top of the ranking crowd out every VERIFIED hit and
+        # produce a false EMPTY.
+        pool = limit * 3
+        try:
+            total = self.vectors.count(COLLECTION_CHUNKS)
+        except Exception:
+            total = None
+        if total:
+            pool = max(pool, int(total))
+        hits = self.vectors.query(COLLECTION_CHUNKS, embedding, n=pool) or []
 
         kept: list[QueryHit] = []
+        saw_unverified = False
         for hit in hits:
             if len(kept) >= limit:
                 break
+            score = getattr(hit, "score", None)
+            if score is not None:
+                try:
+                    if float(score) <= 0.0:
+                        # Cosine similarity of zero or less is no
+                        # similarity at all. Nearest neighbour ranking
+                        # still returns these for unrelated queries, and
+                        # presenting them as verbatim receipts invents a
+                        # match that does not exist.
+                        continue
+                except (TypeError, ValueError):
+                    pass
             metadata = getattr(hit, "metadata", None) or {}
             segment_id = metadata.get("segment_id") or getattr(hit, "id", None)
             if not segment_id:
@@ -249,14 +307,15 @@ class QueryService:
             seg = self.store.get_segment(segment_id)
             if not seg:
                 continue
-            if seg.get("gate_status") != GATE_VERIFIED:
-                continue
             if person_id is not None and seg.get("speaker_person_id") != person_id:
                 continue
-            self._keep_hit(seg, getattr(hit, "score", None), kept)
+            if seg.get("gate_status") != GATE_VERIFIED:
+                saw_unverified = True
+                continue
+            self._keep_hit(seg, score, kept)
 
         if not kept:
-            return self._empty(self._no_results_reason(person))
+            return self._empty(self._no_results_reason(person, saw_unverified))
         return QueryResult(status=STATUS_OK, reason=None, results=kept)
 
     def exact_search(self, term, person_ref=None, limit=20) -> QueryResult:
@@ -270,22 +329,34 @@ class QueryService:
             return error
         person_id = person.get("id") if person else None
 
-        segments = self.store.search_segments_exact(term, limit) or []
+        if not term or not str(term).strip():
+            # An empty substring matches every segment in the store, so a
+            # blank term must be an explicit no-match, never a dump of
+            # the whole verified transcript.
+            return self._empty(REASON_NO_MATCHES)
+
+        # Fetch well past the limit before filtering: the store returns
+        # newest first, so fetching exactly limit rows let a run of
+        # unverified matches hide older VERIFIED matches behind them.
+        fetch_limit = min(max(limit * 10, 200), 1000)
+        segments = self.store.search_segments_exact(term, fetch_limit) or []
 
         kept: list[QueryHit] = []
+        saw_unverified = False
         for seg in segments:
             if len(kept) >= limit:
                 break
             if not seg:
                 continue
-            if seg.get("gate_status") != GATE_VERIFIED:
-                continue
             if person_id is not None and seg.get("speaker_person_id") != person_id:
+                continue
+            if seg.get("gate_status") != GATE_VERIFIED:
+                saw_unverified = True
                 continue
             self._keep_hit(seg, None, kept)
 
         if not kept:
-            return self._empty(self._no_results_reason(person))
+            return self._empty(self._no_results_reason(person, saw_unverified))
         return QueryResult(status=STATUS_OK, reason=None, results=kept)
 
     # ------------------------------------------------------------------
@@ -298,13 +369,24 @@ class QueryService:
         return {key: value for key, value in seg.items() if key != "raw_text"}
 
     def get_interaction(self, session_id) -> Optional[dict]:
-        """Return one session plus its public segments, or None."""
+        """Return one session plus its public segments, or None.
+
+        Only VERIFIED segments are returned. Before this filter, REVIEW
+        and SILENCE segments came back in the segment list, which leaked
+        unverified transcript text (and its raw_text-adjacent metadata)
+        to any caller of this view, breaking the verified-only rule that
+        every other retrieval path enforces.
+        """
         session = self.store.get_session(session_id)
         if not session:
             return None
         segments = self.store.list_segments(session_id) or []
         ordered = sorted(
-            (seg for seg in segments if seg),
+            (
+                seg
+                for seg in segments
+                if seg and seg.get("gate_status") == GATE_VERIFIED
+            ),
             key=lambda seg: (
                 seg.get("seq") if seg.get("seq") is not None else 0,
                 seg.get("start_offset_s") if seg.get("start_offset_s") is not None else 0,
@@ -326,8 +408,14 @@ class QueryService:
             seg for seg in segments if seg and seg.get("gate_status") == GATE_VERIFIED
         ]
 
+        # Sessions are counted over VERIFIED segments only, matching
+        # verified_segments and talk_seconds below. Counting every
+        # segment reported sessions the person only ever spoke in
+        # unverified segments for, which contradicts the rest of the
+        # profile (a person with zero verified segments showed a
+        # non-zero sessions_count).
         sessions_count = len(
-            {seg.get("session_id") for seg in segments if seg and seg.get("session_id")}
+            {seg.get("session_id") for seg in verified if seg.get("session_id")}
         )
         talk_seconds = round(
             sum(
@@ -357,3 +445,84 @@ class QueryService:
         profile["talk_seconds"] = talk_seconds
         profile["recent_segments"] = recent_segments
         return profile
+
+    def list_interactions_with_person(self, person_ref) -> dict:
+        """Sessions that include a person, with per-session segment counts.
+
+        Always returns a dict carrying status and reason, never a bare
+        empty list: NO_PEOPLE when nobody is enrolled, PERSON_NOT_FOUND
+        for an unknown reference, AMBIGUOUS_NAME with the candidate list
+        for a shared name, NO_VERIFIED_SEGMENTS when the person only has
+        unverified segments, and NO_MATCHES when they have no segments
+        at all. Counts and sessions cover VERIFIED segments only.
+        """
+        base = {
+            "person": None,
+            "candidates": [],
+            "session_count": 0,
+            "segment_count": 0,
+            "interactions": [],
+        }
+        if self.store.people_count() == 0:
+            return {**base, "status": STATUS_EMPTY, "reason": REASON_NO_PEOPLE}
+
+        person, ambiguous = self.resolve_person(person_ref)
+        if ambiguous:
+            return {
+                **base,
+                "status": STATUS_EMPTY,
+                "reason": REASON_AMBIGUOUS_NAME,
+                "candidates": self.person_candidates(person_ref),
+            }
+        if person is None:
+            return {
+                **base,
+                "status": STATUS_EMPTY,
+                "reason": REASON_PERSON_NOT_FOUND,
+            }
+
+        segments = self.store.segments_for_person(person.get("id")) or []
+        verified = [
+            seg
+            for seg in segments
+            if seg and seg.get("gate_status") == GATE_VERIFIED
+        ]
+        if not verified:
+            reason = REASON_NO_VERIFIED if segments else REASON_NO_MATCHES
+            return {
+                **base,
+                "status": STATUS_EMPTY,
+                "reason": reason,
+                "person": dict(person),
+            }
+
+        by_session: dict = {}
+        for seg in verified:
+            session_id = seg.get("session_id")
+            if session_id is not None:
+                by_session.setdefault(session_id, []).append(seg)
+        interactions = []
+        for session_id, person_segments in by_session.items():
+            try:
+                session = self.store.get_session(session_id)
+            except Exception:
+                session = None
+            interactions.append(
+                {
+                    "session_id": session_id,
+                    "session": session,
+                    "segment_count": len(person_segments),
+                }
+            )
+        interactions.sort(
+            key=lambda item: str((item.get("session") or {}).get("started_at", ""))
+        )
+        return {
+            "status": STATUS_OK,
+            "reason": None,
+            "person": dict(person),
+            "candidates": [],
+            "session_count": len(interactions),
+            "segment_count": len(verified),
+            "interactions": interactions,
+        }
