@@ -196,6 +196,13 @@ class InsightMcpServer:
         value = arguments.get(key)
         if value is None or (isinstance(value, str) and not value.strip()):
             raise ToolError("MISSING_ARGUMENT: %s" % key)
+        # All required arguments in this server are strings. Reject
+        # other JSON types instead of letting them flow into the query
+        # layer, where a list or dict would crash or coerce oddly.
+        if not isinstance(value, str):
+            raise ToolError("INVALID_ARGUMENT: %s must be a string" % key)
+        if len(value) > 2000:
+            raise ToolError("INVALID_ARGUMENT: %s is too long" % key)
         return value
 
     @staticmethod
@@ -203,11 +210,16 @@ class InsightMcpServer:
         raw = arguments.get("limit")
         if raw is None:
             return default
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
+        # bool is a subclass of int; True is not a limit. A float is
+        # accepted only when it is integral (JSON clients vary here).
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             raise ToolError("INVALID_ARGUMENT: limit must be an integer")
-        return max(1, value)
+        if isinstance(raw, float) and not raw.is_integer():
+            raise ToolError("INVALID_ARGUMENT: limit must be an integer")
+        raw = int(raw)
+        # Clamp: an unbounded limit lets one tools/call force an
+        # arbitrarily large vector query and response.
+        return max(1, min(raw, 100))
 
     def _resolve_person(self, store, person_ref):
         """Resolve a person ref (id or name) against the store's people."""

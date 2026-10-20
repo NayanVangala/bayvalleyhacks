@@ -38,6 +38,19 @@ AMBIGUOUS_NAME = REASON_AMBIGUOUS_NAME
 STATUS_OK = "OK"
 STATUS_EMPTY = "EMPTY"
 
+# Hard ceiling on search results. Callers are local tools, so a larger
+# limit is never legitimate; an unbounded limit lets one request force
+# an arbitrarily large vector query and response (local DoS).
+MAX_LIMIT = 100
+
+
+def _clamp_limit(limit, default: int) -> int:
+    try:
+        value = int(limit)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, MAX_LIMIT))
+
 
 def _parse_iso(value) -> Optional[datetime]:
     """Parse an ISO 8601 string into a datetime, or return None."""
@@ -213,6 +226,7 @@ class QueryService:
 
     def search_conversations(self, query, person_ref=None, limit=10) -> QueryResult:
         """Semantic search over VERIFIED transcript chunks only."""
+        limit = _clamp_limit(limit, 10)
         if self.store.people_count() == 0:
             return self._empty(REASON_NO_PEOPLE)
 
@@ -247,6 +261,7 @@ class QueryService:
 
     def exact_search(self, term, person_ref=None, limit=20) -> QueryResult:
         """Backup exact text search over VERIFIED segments only."""
+        limit = _clamp_limit(limit, 20)
         if self.store.people_count() == 0:
             return self._empty(REASON_NO_PEOPLE)
 
