@@ -158,3 +158,8 @@ class QueryResult:
     status: str  # "OK" or "EMPTY"
     reason: Optional[str]  # one of the REASON_* constants when EMPTY
     results: list[QueryHit] = field(default_factory=list)
+    # For AMBIGUOUS_NAME only: the people the name could mean, as
+    # {"id", "name"} dicts. Zero segments are returned in that case;
+    # the caller picks a candidate by id instead of the server
+    # guessing (BUILD_PLAN Section 2.6). Empty for every other result.
+    candidates: list = field(default_factory=list)

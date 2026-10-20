@@ -153,8 +153,13 @@ class QueryService:
     # Shared empty-result handling
     # ------------------------------------------------------------------
 
-    def _empty(self, reason: str) -> QueryResult:
-        return QueryResult(status=STATUS_EMPTY, reason=reason, results=[])
+    def _empty(self, reason: str, candidates=None) -> QueryResult:
+        return QueryResult(
+            status=STATUS_EMPTY,
+            reason=reason,
+            results=[],
+            candidates=list(candidates or []),
+        )
 
     def _resolve_filter(self, person_ref):
         """Return (person, error_result). Exactly one of them is set when a
@@ -163,7 +168,15 @@ class QueryService:
             return None, None
         person, ambiguous = self.resolve_person(person_ref)
         if ambiguous:
-            return None, self._empty(REASON_AMBIGUOUS_NAME)
+            # Report the candidates, never pick one: the caller must
+            # re-ask with a person id (BUILD_PLAN Section 2.6).
+            matches = self.store.find_people_by_name(person_ref) or []
+            candidates = [
+                {"id": match.get("id"), "name": match.get("name")}
+                for match in matches
+                if isinstance(match, dict)
+            ]
+            return None, self._empty(REASON_AMBIGUOUS_NAME, candidates)
         if person is None:
             return None, self._empty(REASON_PERSON_NOT_FOUND)
         return person, None

@@ -123,6 +123,21 @@ _CITATION_RE = re.compile(r"\[seg:([^\]]+)\]")
 _CITATION_AT_END_RE = re.compile(r"\[seg:[^\]]+\]\s*$")
 _QUOTED_RE = re.compile(r'"([^"]+)"')
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_PROPER_NOUN_RE = re.compile(r"[A-Z][a-z]+|[A-Z]{2,}")
+_WORD_RE = re.compile(r"[A-Za-z]+")
+
+# Words that may open a sentence without being a proper noun. A
+# sentence initial word on this list is not checked for containment;
+# any other capitalized word, at the start or later, must appear in
+# the segments its sentence cites.
+_SENTENCE_STARTERS = frozenset(
+    {
+        "a", "also", "an", "and", "at", "but", "finally", "first",
+        "for", "he", "here", "however", "in", "it", "meanwhile", "on",
+        "overall", "second", "she", "so", "that", "the", "then",
+        "there", "they", "this", "together", "we", "with",
+    }
+)
 
 
 def _get(obj, key, default=None):
@@ -252,6 +267,34 @@ def validate_recap(recap_text, verified_segments) -> list:
                     errors.append(
                         "Number "
                         + number
+                        + " in sentence does not appear in its cited segments: "
+                        + sentence.strip()
+                    )
+        # Rule 5: every proper noun in the sentence must appear in the
+        # segments cited by that sentence (BUILD_PLAN Section 2.7:
+        # proper noun containment). This is what stops the recap from
+        # naming a person, place, or month the source never mentioned.
+        # Month and weekday names are caught here too: they are
+        # capitalized tokens like any other proper noun.
+        if valid_cited:
+            cited_tokens = set()
+            for cited_id in valid_cited:
+                cited_tokens.update(
+                    _TOKEN_RE.findall(_segment_text(by_id[cited_id]).lower())
+                )
+            first_word = _WORD_RE.search(cleaned)
+            for match in _PROPER_NOUN_RE.finditer(cleaned):
+                token = match.group(0)
+                if (
+                    first_word is not None
+                    and match.start() == first_word.start()
+                    and token.lower() in _SENTENCE_STARTERS
+                ):
+                    continue
+                if token.lower() not in cited_tokens:
+                    errors.append(
+                        "Proper noun "
+                        + token
                         + " in sentence does not appear in its cited segments: "
                         + sentence.strip()
                     )
