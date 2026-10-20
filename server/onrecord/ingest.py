@@ -20,31 +20,58 @@ HTTP surface:
 
 WebSocket ingest: WS /ingest/audio?session_id=<id>
 
-Text frames are JSON control messages:
+The wire protocol is bridge-ios/PROTOCOL.md. Text frames are JSON
+control messages. The bridge vocabulary is:
+
+    {"type": "hello" | "session_start" | "talk_start" | "talk_end"
+             | "session_pause" | "session_resume" | "session_end"
+             | "ping" | "photo_meta" | "tag_moment"}
+
+and the REST-era vocabulary is accepted on the same socket:
 
     {"type": "arm" | "start" | "talk_stop" | "new_segment" | "pause"
              | "resume" | "photo" | "end"}
 
-"photo" means the NEXT binary frame on the socket is a JPEG photo. The photo
-is kept as the session's latest photo and handed to the pipeline with every
-segment sealed afterwards, so face identification can use it.
+Unknown control types are ignored, per PROTOCOL.md section 3; they
+are never an error. "photo" (legacy) means the NEXT binary frame on
+the socket is a JPEG photo. Photos are kept as the session's latest
+photo and handed to the pipeline with every segment sealed
+afterwards, so face identification can use it.
 
-Binary audio frames have a 16-byte header, struct format "<IIQ":
+Binary frames have a 16-byte header. Two layouts share the socket:
 
-    seg_idx        uint32, little endian
-    frame_seq      uint32, little endian
-    capture_ts_ms  uint64, little endian, milliseconds since epoch
+- Bridge frames (PROTOCOL.md section 4): magic "OR", kind byte
+  (1 = audio, 2 = photo), flags byte, then seg_idx, frame_seq and
+  capture_ts_ms as big endian uint32s. Audio payloads are PCM16
+  mono, exactly 3200 bytes per frame except a shorter final frame
+  of a segment. Photo payloads are whole JPEGs; a photo frame is
+  never routed into the audio path.
+- Legacy frames (the pre-bridge client): struct format "<IIQ",
+  seg_idx / frame_seq / capture_ts_ms little endian, no magic, no
+  kind; the payload is always PCM16 audio.
 
-followed by raw PCM16 mono audio at the configured sample rate (default
-16000 Hz). The header is stripped before the PCM is pushed into the
-SessionController.
+A frame shorter than 16 bytes, a bridge frame with bad magic or an
+unknown kind, and a truncated or oversize bridge audio payload are
+dropped whole and reported with a non-fatal error frame; the socket
+stays open. Duplicate frames (same session, seg_idx, frame_seq,
+capture_ts_ms, length) are dropped: a reconnect replay must never
+append the same audio twice. Timeline losses (pause gaps, frame
+gaps, reconnects, source failover) are recorded as explicit gap
+records on the session and returned in API payloads, never silently
+stitched over.
 
 Server to client messages on the ingest socket:
 
-    {"type": "segments", "segments": [...]}   after each sealed batch
-    {"type": "session_ended"}                 after an "end" control frame
-    {"type": "error", "message": "..."}       per-message failure, socket
-                                              stays open
+    {"type": "welcome", "session_id": ..., "server_time": ...,
+     "ok": true}                                 reply to "hello"
+    {"type": "pong", "t0_mono_ms": ..., "server_time": ...}
+                                                   reply to "ping"
+    {"type": "segments", "segments": [...], "gaps": [...]}
+                                                   after each sealed batch
+    {"type": "session_ended"}                 after an end control frame
+    {"type": "error", "code": ..., "message": ..., "fatal": false}
+                                              per-message failure, socket
+                                              stays open unless fatal
 
 Segment dicts never leave this server with their raw_text field attached.
 raw_text is server-only (see BUILD_PLAN Section 3, key decision 4); the
@@ -60,9 +87,11 @@ from __future__ import annotations
 import base64
 import binascii
 import dataclasses
+import datetime
 import importlib
 import json
 import struct
+import time
 from typing import Any, Optional
 
 try:
@@ -78,14 +107,111 @@ except ImportError:  # pragma: no cover, exercised only without fastapi
     WebSocketDisconnect = Exception  # type: ignore[assignment,misc]
     HAS_FASTAPI = False
 
-__all__ = ["HAS_FASTAPI", "AUDIO_HEADER", "create_app", "main", "strip_raw_text"]
+__all__ = [
+    "HAS_FASTAPI",
+    "AUDIO_HEADER",
+    "BRIDGE_HEADER",
+    "FrameError",
+    "parse_binary_frame",
+    "create_app",
+    "main",
+    "strip_raw_text",
+]
 
-# Binary audio frame header: seg_idx (uint32), frame_seq (uint32),
-# capture_ts_ms (uint64), all little endian. 16 bytes total.
+# Legacy binary frame header: seg_idx (uint32), frame_seq (uint32),
+# capture_ts_ms (uint64), all little endian. 16 bytes total. Kept for
+# the pre-bridge client and its tests; new senders use the bridge
+# header below (bridge-ios/PROTOCOL.md section 4).
 AUDIO_HEADER = struct.Struct("<IIQ")
+
+# Bridge binary frame header (PROTOCOL.md section 4): magic "OR",
+# kind (uint8), flags (uint8), seg_idx / frame_seq / capture_ts_ms
+# as big endian uint32s. 16 bytes total.
+BRIDGE_HEADER = struct.Struct(">2sBBIII")
+
+KIND_AUDIO = 1
+KIND_PHOTO = 2
+
+# Flag bits (PROTOCOL.md section 5.3). FINAL is bit 1 in both the
+# current document and the Swift WireProtocol; the pre-roll bit has
+# been assigned both 0x01 (document) and 0x04 (Swift after its field
+# mismatch fix), so both are accepted as a pre-roll hint. Flags are
+# informational: a frame is never rejected over an unexpected flag.
+FLAG_SEGMENT_START = 0x01
+FLAG_FINAL = 0x02
+FLAG_PREROLL = 0x04
+PREROLL_FLAG_MASK = FLAG_SEGMENT_START | FLAG_PREROLL
+
+# Bridge audio payload size: exactly one 100 ms frame of PCM16 mono
+# at 16 kHz (PROTOCOL.md section 5.1). Only the final frame of a
+# segment may be shorter.
+FRAME_BYTES = 3200
 
 DEFAULT_PORT = 8000
 DEFAULT_SAMPLE_RATE = 16000
+
+
+class FrameError(ValueError):
+    """A binary frame that must be dropped whole (PROTOCOL.md 4)."""
+
+
+def _utc_now_iso() -> str:
+    """Server wall clock as ISO 8601 UTC with a Z suffix."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def parse_binary_frame(data: bytes) -> dict:
+    """Parse one bridge binary frame (PROTOCOL.md section 4).
+
+    Returns a dict with kind, flags, seg_idx, frame_seq,
+    capture_ts_ms, and payload. Raises FrameError when the frame is
+    shorter than the 16 byte header, the magic is wrong, or the kind
+    is not audio or photo: such a frame is dropped whole by callers.
+    Legacy "<IIQ" frames do not go through this parser (they carry no
+    magic to validate); the ingest handler routes them separately.
+    """
+    if len(data) < BRIDGE_HEADER.size:
+        raise FrameError(
+            "binary frame shorter than the 16 byte header: %d bytes" % len(data)
+        )
+    magic, kind, flags, seg_idx, frame_seq, capture_ts_ms = BRIDGE_HEADER.unpack_from(data, 0)
+    if magic != b"OR":
+        raise FrameError("bad binary frame magic: %r" % (magic,))
+    if kind not in (KIND_AUDIO, KIND_PHOTO):
+        raise FrameError("unknown binary frame kind: %d" % kind)
+    return {
+        "kind": kind,
+        "flags": flags,
+        "seg_idx": seg_idx,
+        "frame_seq": frame_seq,
+        "capture_ts_ms": capture_ts_ms,
+        "payload": bytes(data[BRIDGE_HEADER.size:]),
+    }
+
+# Payload ceilings. Legit traffic is far below every one of these:
+# an audio wire frame is 3200 bytes of PCM plus the 16 byte header, a
+# cadence photo is a 960 px JPEG, and an enrollment voice sample is
+# about 10 seconds of PCM16. The caps exist so one client cannot make
+# the server buffer unbounded data in memory (the API has no auth, so
+# these bounds are the only thing standing between the LAN and RAM).
+MAX_SEARCH_LIMIT = 100
+MAX_TEXT_FRAME_BYTES = 64 * 1024
+MAX_AUDIO_FRAME_BYTES = 1 * 1024 * 1024
+MAX_PHOTO_BYTES = 10 * 1024 * 1024
+MAX_ENROLL_PHOTO_BYTES = 10 * 1024 * 1024
+MAX_ENROLL_VOICE_BYTES = 16 * 1024 * 1024
+JPEG_MAGIC = b"\xff\xd8\xff"
+# Bridge binary header magic ("OR", see bridge-ios PROTOCOL.md).
+BRIDGE_MAGIC = b"OR"
+
+
+def _clamp_limit(raw: Any, default: int = 10) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, MAX_SEARCH_LIMIT))
 
 
 # --------------------------------------------------------------------------
@@ -97,6 +223,7 @@ DEFAULT_SAMPLE_RATE = 16000
 class _FallbackSettings:
     """Minimal settings used only if onrecord.config cannot be imported."""
 
+    host: str = "127.0.0.1"
     port: int = DEFAULT_PORT
     sample_rate: int = DEFAULT_SAMPLE_RATE
     data_dir: str = "./data"
@@ -244,26 +371,36 @@ def _load_settings() -> Any:
     return settings
 
 
-def _new_controller(session_id: str, sample_rate: int) -> Any:
-    """Construct a SessionController, tolerating constructor variants."""
+def _new_controller(session_id: str, sample_rate: int, initial_seq: int = 0) -> Any:
+    """Construct a SessionController, tolerating constructor variants.
+
+    initial_seq is the number of segments already stored for the
+    session when the controller is (re)built, so a controller created
+    after a server restart continues seg numbering where the stored
+    session left off instead of reusing seq 0.
+    """
     module = _import_sibling("state_machine")
     if module is None:
         raise RuntimeError("onrecord.state_machine is not available")
     cls = getattr(module, "SessionController", None)
     if cls is None:
         raise RuntimeError("onrecord.state_machine.SessionController is missing")
-    return _call_variants(
-        cls,
-        [
-            ((), {"session_id": session_id, "sample_rate": sample_rate}),
-            ((), {"sample_rate": sample_rate}),
-            ((), {"session_id": session_id}),
-            ((), {}),
-            ((session_id, sample_rate), {}),
-            ((session_id,), {}),
-            ((sample_rate,), {}),
-        ],
-    )
+    variants = []
+    if initial_seq:
+        variants += [
+            ((), {"sample_rate": sample_rate, "initial_seq": initial_seq}),
+            ((), {"initial_seq": initial_seq}),
+        ]
+    variants += [
+        ((), {"session_id": session_id, "sample_rate": sample_rate}),
+        ((), {"sample_rate": sample_rate}),
+        ((), {"session_id": session_id}),
+        ((), {}),
+        ((session_id, sample_rate), {}),
+        ((session_id,), {}),
+        ((sample_rate,), {}),
+    ]
+    return _call_variants(cls, variants)
 
 
 def _build_store(settings: Any) -> Any:
@@ -453,6 +590,25 @@ def create_app(
 
     app = FastAPI(title="OnRecord", version="0.1.0")
 
+    # CORS: the API has no authentication, so cross-origin reads are
+    # limited to the local dashboard origin only. A wildcard here
+    # would let any website open in the demo browser read transcripts
+    # and biometrics metadata from the local server.
+    try:
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[
+                "http://localhost:3000",
+                "http://127.0.0.1:3000",
+            ],
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Content-Type"],
+        )
+    except Exception:
+        pass
+
     # Per-session runtime state:
     #   {session_id: {"controller": SessionController,
     #                 "latest_photo": bytes or None,
@@ -510,18 +666,128 @@ def create_app(
         if session is None:
             raise HTTPException(status_code=404, detail="session not found: " + str(session_id))
         try:
-            controller = _new_controller(session_id, sample_rate)
+            entry = _make_entry(session_id, session)
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc))
-        entry = {
-            "controller": controller,
-            "latest_photo": None,
-            "offset": 0.0,
-            "session": session,
-            "processed_count": 0,
-        }
         runtime[session_id] = entry
         return entry
+
+    def _make_entry(session_id: str, session: Optional[dict]) -> dict:
+        """Build the runtime entry for one session.
+
+        When segments are already stored for the session (the entry is
+        being rebuilt after a server restart, or the session was
+        driven over REST before the socket connected), the timeline
+        offset resumes at the end of the last stored segment and the
+        controller starts at the stored segment count, so neither
+        timestamps nor seg numbering restart from zero.
+        """
+        existing = _list_segments(session_id)
+        offset = 0.0
+        for row in existing:
+            end = row.get("end_offset_s")
+            if isinstance(end, (int, float)) and float(end) > offset:
+                offset = float(end)
+        controller = _new_controller(session_id, sample_rate, initial_seq=len(existing))
+        return {
+            "controller": controller,
+            "latest_photo": None,
+            "offset": offset,
+            "session": session or {"id": session_id},
+            "processed_count": len(existing),
+            # Sealed segments waiting for the pipeline, in seal order.
+            "pending_sealed": [],
+            # Explicit timeline gap records (see state_machine gaps).
+            "gaps": [],
+            "gaps_consumed": 0,
+            # Identities of binary frames already accepted on this
+            # session, for reconnect replay dedupe (PROTOCOL.md 6).
+            "seen_frames": {},
+            "last_frame": None,
+            "tags": [],
+            "source": (session or {}).get("source"),
+            "hello_seen": False,
+            "conn_seq": 0,
+            "connected": False,
+            "disconnected_monotonic": None,
+            "client_paused": False,
+            "client_stats": None,
+            "duplicate_frames": 0,
+            "malformed_frames": 0,
+            "unknown_controls": 0,
+        }
+
+    def _note_gap(
+        entry: dict,
+        kind: str,
+        duration_s: Optional[float] = None,
+        dropped_bytes: int = 0,
+        detail: str = "",
+    ) -> None:
+        """Record an explicit timeline gap on the session controller."""
+        controller = entry.get("controller")
+        note = getattr(controller, "note_gap", None)
+        if callable(note):
+            try:
+                note(kind, duration_s=duration_s, dropped_bytes=dropped_bytes, detail=detail)
+                return
+            except Exception:
+                pass
+        gaps = getattr(controller, "gaps", None)
+        if isinstance(gaps, list):
+            gaps.append(
+                {
+                    "kind": kind,
+                    "duration_s": duration_s,
+                    "dropped_bytes": int(dropped_bytes or 0),
+                    "detail": detail,
+                    "after_seq": len(getattr(controller, "segments", []) or []),
+                    "closed": True,
+                }
+            )
+
+    def _collect_gaps(entry: dict, session_id: str) -> list:
+        """Move newly closed controller gaps into the entry timeline.
+
+        Each collected gap is stamped with the session timeline offset
+        at which it starts, and a measured gap advances the running
+        offset, so the segment after a gap is placed after it instead
+        of being stitched onto the segment before it. Gaps with an
+        unknown duration (reconnect, failover) are recorded but do not
+        move the offset. Returns the gaps collected by this call.
+        """
+        controller = entry.get("controller")
+        gaps = getattr(controller, "gaps", None) if controller is not None else None
+        if not isinstance(gaps, list):
+            return []
+        idx = int(entry.get("gaps_consumed") or 0)
+        new: list = []
+        while idx < len(gaps):
+            gap = gaps[idx]
+            if not isinstance(gap, dict):
+                idx += 1
+                continue
+            if not gap.get("closed", True):
+                # An open gap (a pause still in progress) blocks the
+                # queue: later records collect after it closes, which
+                # keeps the timeline in open order.
+                break
+            record = {
+                "kind": gap.get("kind"),
+                "duration_s": gap.get("duration_s"),
+                "dropped_bytes": int(gap.get("dropped_bytes") or 0),
+                "detail": gap.get("detail") or "",
+                "after_seq": gap.get("after_seq"),
+                "start_offset_s": float(entry.get("offset") or 0.0),
+            }
+            duration = gap.get("duration_s")
+            if isinstance(duration, (int, float)) and duration > 0:
+                entry["offset"] = float(entry.get("offset") or 0.0) + float(duration)
+            entry.setdefault("gaps", []).append(record)
+            new.append(record)
+            idx += 1
+        entry["gaps_consumed"] = idx
+        return new
 
     def _list_segments(session_id: str) -> list:
         if store is None:
@@ -592,46 +858,73 @@ def create_app(
             except Exception:
                 pass
 
-    def _process_sealed(entry: dict, session_id: str, sealed_list: list) -> list:
+    def _process_sealed(
+        entry: dict, session_id: str, sealed_list: list, strict: bool = True
+    ) -> list:
         """Run sealed segments through the pipeline, advancing the offset.
 
         Every sealed segment is processed with base_offset_s set to the
         running session offset, then the offset advances by the sealed
         duration, so segment timestamps line up across the whole session.
         Returns the new segment dicts with raw_text stripped.
+
+        Sealed segments enter a per-session queue first and are popped
+        only after the pipeline accepts them. If the pipeline is
+        unavailable (or, with strict=False, a segment fails), the
+        unprocessed segments stay queued and drain on a later call
+        instead of being dropped on the floor: sealing a segment in
+        the controller must never be the moment its audio is lost.
+        With strict=True an unavailable pipeline still raises 503, as
+        the REST callers have always seen, but the segment is queued
+        before the raise.
         """
-        out: list = []
+        pending = entry.setdefault("pending_sealed", [])
         for sealed in sealed_list:
-            if sealed is None:
-                continue
+            if sealed is not None:
+                pending.append(sealed)
+        out: list = []
+        while pending:
             if pipeline is None:
-                raise HTTPException(
-                    status_code=503, detail="pipeline is unavailable"
-                )
+                if strict:
+                    raise HTTPException(
+                        status_code=503, detail="pipeline is unavailable"
+                    )
+                break
             process = getattr(pipeline, "process_segment", None)
             if not callable(process):
-                raise HTTPException(
-                    status_code=503, detail="pipeline.process_segment is unavailable"
-                )
+                if strict:
+                    raise HTTPException(
+                        status_code=503, detail="pipeline.process_segment is unavailable"
+                    )
+                break
+            sealed = pending[0]
             base_offset = float(entry.get("offset") or 0.0)
             photo = entry.get("latest_photo")
-            results = _call_variants(
-                process,
-                [
-                    (
-                        (),
-                        {
-                            "session_id": session_id,
-                            "sealed": sealed,
-                            "base_offset_s": base_offset,
-                            "photo_bytes": photo,
-                        },
-                    ),
-                    ((session_id, sealed, base_offset, photo), {}),
-                    ((session_id, sealed, base_offset), {}),
-                    ((session_id, sealed), {}),
-                ],
-            )
+            try:
+                results = _call_variants(
+                    process,
+                    [
+                        (
+                            (),
+                            {
+                                "session_id": session_id,
+                                "sealed": sealed,
+                                "base_offset_s": base_offset,
+                                "photo_bytes": photo,
+                            },
+                        ),
+                        ((session_id, sealed, base_offset, photo), {}),
+                        ((session_id, sealed, base_offset), {}),
+                        ((session_id, sealed), {}),
+                    ],
+                )
+            except HTTPException:
+                raise
+            except Exception:
+                if strict:
+                    raise
+                break
+            pending.pop(0)
             if results is None:
                 results = []
             elif isinstance(results, dict):
@@ -660,8 +953,25 @@ def create_app(
                 sealed = controller.pause()
                 if sealed is not None:
                     sealed_list = [sealed]
-            elif action == "end":
-                result = controller.end()
+            elif action == "end_request":
+                # Two-step end guard, step one: arms the request on
+                # the controller and changes nothing else.
+                request_end = getattr(controller, "request_end", None)
+                if not callable(request_end):
+                    raise HTTPException(
+                        status_code=409, detail="controller has no end request step"
+                    )
+                request_end()
+            elif action in ("end", "end_confirm"):
+                if action == "end_confirm":
+                    confirm = getattr(controller, "confirm_end", None)
+                    if not callable(confirm):
+                        raise HTTPException(
+                            status_code=409, detail="controller has no end confirm step"
+                        )
+                    result = confirm()
+                else:
+                    result = controller.end()
                 if result is None:
                     sealed_list = []
                 elif isinstance(result, (list, tuple)):
@@ -677,8 +987,13 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc) or exc.__class__.__name__)
 
         new_segments = _process_sealed(entry, session_id, sealed_list)
+        # Gaps collect after the seals of this action are processed:
+        # a gap belongs between the segment before it and the segment
+        # after it, and collecting here advances the offset for the
+        # next segment only.
+        new_gaps = _collect_gaps(entry, session_id)
 
-        if action == "end":
+        if action in ("end", "end_confirm"):
             _end_db_session(session_id)
         else:
             _sync_status(entry, session_id)
@@ -690,6 +1005,9 @@ def create_app(
             "session": session,
             "state": _state_str(controller),
             "new_segments": new_segments,
+            "new_gaps": new_gaps,
+            "gaps": list(entry.get("gaps") or []),
+            "end_requested": bool(getattr(controller, "end_requested", False)),
         }
 
     async def _json_body(request: Request) -> dict:
@@ -717,6 +1035,7 @@ def create_app(
         return build_fn, post_fn
 
     def _do_search(query_text: str, person_ref: Any, limit: int) -> dict:
+        limit = _clamp_limit(limit)
         if query_service is None:
             raise HTTPException(status_code=503, detail="query service is unavailable")
         search = getattr(query_service, "search_conversations", None)
@@ -745,11 +1064,16 @@ def create_app(
     # REST: health and session lifecycle
     # ------------------------------------------------------------------
 
+    # /health is an alias for /healthz: docs/SETUP.md, the pre-demo
+    # checklist, and scripts/seed_demo.py all probe /health, while the
+    # dashboard expects /healthz. Both names must answer.
     @app.get("/healthz")
+    @app.get("/health")
     async def healthz() -> dict:
         return {"ok": True}
 
     @app.post("/sessions")
+    @app.post("/api/sessions")
     async def create_session(request: Request) -> dict:
         _store_or_503()
         body = await _json_body(request)
@@ -780,37 +1104,45 @@ def create_app(
         session_id = str(session_id)
         session["id"] = session_id
         try:
-            controller = _new_controller(session_id, sample_rate)
+            runtime[session_id] = _make_entry(session_id, session)
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc))
-        runtime[session_id] = {
-            "controller": controller,
-            "latest_photo": None,
-            "offset": 0.0,
-            "session": session,
-            "processed_count": 0,
-        }
         return session
 
     @app.post("/sessions/{session_id}/arm")
+    @app.post("/api/sessions/{session_id}/arm")
     async def session_arm(session_id: str) -> dict:
         return _run_action(session_id, "arm")
 
     @app.post("/sessions/{session_id}/start")
+    @app.post("/api/sessions/{session_id}/start")
     async def session_start(session_id: str) -> dict:
         return _run_action(session_id, "start")
 
     @app.post("/sessions/{session_id}/pause")
+    @app.post("/api/sessions/{session_id}/pause")
     async def session_pause(session_id: str) -> dict:
         return _run_action(session_id, "pause")
 
     @app.post("/sessions/{session_id}/resume")
+    @app.post("/api/sessions/{session_id}/resume")
     async def session_resume(session_id: str) -> dict:
         return _run_action(session_id, "resume")
 
     @app.post("/sessions/{session_id}/end")
+    @app.post("/api/sessions/{session_id}/end")
     async def session_end(session_id: str) -> dict:
         return _run_action(session_id, "end")
+
+    @app.post("/sessions/{session_id}/end_request")
+    @app.post("/api/sessions/{session_id}/end_request")
+    async def session_end_request(session_id: str) -> dict:
+        return _run_action(session_id, "end_request")
+
+    @app.post("/sessions/{session_id}/end_confirm")
+    @app.post("/api/sessions/{session_id}/end_confirm")
+    async def session_end_confirm(session_id: str) -> dict:
+        return _run_action(session_id, "end_confirm")
 
     @app.get("/sessions/{session_id}/status")
     async def session_status(session_id: str) -> dict:
@@ -825,6 +1157,11 @@ def create_app(
         out["state"] = state
         out["controller_state"] = state
         out["segment_count"] = _segment_count(session_id, entry)
+        if entry is not None:
+            # Explicit timeline gaps (pauses, frame loss, reconnects),
+            # each with the session offset at which it starts.
+            _collect_gaps(entry, session_id)
+            out["gaps"] = list(entry.get("gaps") or [])
         return _clean(out)
 
     # ------------------------------------------------------------------
@@ -851,6 +1188,10 @@ def create_app(
         out["session"] = session
         out["segments"] = segments
         out["segment_count"] = len(segments)
+        if entry is not None:
+            _collect_gaps(entry, session_id)
+            out["gaps"] = list(entry.get("gaps") or [])
+            out["tags"] = list(entry.get("tags") or [])
         return _clean(out)
 
     @app.get("/api/people")
@@ -861,6 +1202,58 @@ def create_app(
             raise HTTPException(status_code=503, detail="store.list_people is unavailable")
         rows = lister() or []
         return [_as_dict(row) for row in rows]
+
+    @app.delete("/api/people/{person_id}")
+    async def api_delete_person(person_id: str) -> dict:
+        """Delete a person and all of their biometric and segment data.
+
+        This backs the enrollment consent promise that prints can be
+        deleted on request. Removal covers the person row, attributed
+        segments and corrections (store), plus the face print, voice
+        print, and transcript chunks (vector store).
+        """
+        _store_or_503()
+        result: Any = None
+        handled = False
+        if enrollment_service is not None:
+            deleter = getattr(enrollment_service, "delete_person", None)
+            if callable(deleter):
+                handled = True
+                result = deleter(person_id)
+        if not handled:
+            store_deleter = getattr(store, "delete_person", None)
+            if not callable(store_deleter):
+                raise HTTPException(
+                    status_code=503, detail="person deletion is unavailable"
+                )
+            result = store_deleter(person_id)
+            if isinstance(result, dict) and vectors is not None:
+                segment_ids = result.get("segment_ids") or []
+                for collection, key in (
+                    ("face_prints", "face:" + str(person_id)),
+                    ("voice_prints", "voice:" + str(person_id)),
+                ):
+                    try:
+                        vectors.delete(collection, key)
+                    except Exception:
+                        pass
+                for segment_id in segment_ids:
+                    try:
+                        vectors.delete("transcript_chunks", segment_id)
+                    except Exception:
+                        pass
+        if result is None:
+            raise HTTPException(
+                status_code=404, detail="person not found: " + str(person_id)
+            )
+        segment_ids = []
+        if isinstance(result, dict):
+            segment_ids = result.get("segment_ids") or []
+        return {
+            "deleted": True,
+            "person_id": str(person_id),
+            "segments_deleted": len(segment_ids),
+        }
 
     @app.post("/api/enroll")
     async def api_enroll(request: Request) -> dict:
@@ -882,11 +1275,20 @@ def create_app(
                 status_code=422,
                 detail="enroll requires name, photo_b64 and voice_b64",
             )
+        if not isinstance(photo_b64, str) or not isinstance(voice_b64, str):
+            raise HTTPException(
+                status_code=422,
+                detail="photo_b64 and voice_b64 must be base64 strings",
+            )
         try:
-            photo_bytes = base64.b64decode(photo_b64)
-            voice_pcm = base64.b64decode(voice_b64)
-        except (binascii.Error, ValueError) as exc:
+            photo_bytes = base64.b64decode(photo_b64, validate=True)
+            voice_pcm = base64.b64decode(voice_b64, validate=True)
+        except (binascii.Error, ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail="invalid base64 payload: " + str(exc))
+        if len(photo_bytes) > MAX_ENROLL_PHOTO_BYTES:
+            raise HTTPException(status_code=413, detail="enrollment photo too large")
+        if len(voice_pcm) > MAX_ENROLL_VOICE_BYTES:
+            raise HTTPException(status_code=413, detail="enrollment voice sample too large")
         if enrollment_service is None:
             raise HTTPException(status_code=503, detail="enrollment service is unavailable")
         enroll = getattr(enrollment_service, "enroll_person", None)
@@ -1052,24 +1454,188 @@ def create_app(
             session = _fetch_session(str(session_id))
             if session is not None:
                 try:
-                    entry = {
-                        "controller": _new_controller(str(session_id), sample_rate),
-                        "latest_photo": None,
-                        "offset": 0.0,
-                        "session": session,
-                        "processed_count": 0,
-                    }
+                    entry = _make_entry(str(session_id), session)
                     runtime[str(session_id)] = entry
                 except Exception:
                     entry = None
         if entry is None or not session_id:
+            # Unknown session: PROTOCOL.md section 3.2 has an
+            # UNKNOWN_SESSION error for this, and the session must
+            # exist server side (created over REST) before the socket
+            # is accepted. The close code is pinned by the ingest
+            # tests.
             await websocket.close(code=4404)
             return
 
         session_id = str(session_id)
         controller = entry.get("controller")
         await websocket.accept()
+
+        # One live socket per session. A reconnect with the same
+        # session id supersedes the previous socket: the old receive
+        # loop sees its connection token go stale and stops, so two
+        # sockets can never interleave frames into one controller.
+        # The session, controller, and timeline all carry on.
+        entry["conn_seq"] = int(entry.get("conn_seq") or 0) + 1
+        my_conn = entry["conn_seq"]
+        entry["connected"] = True
         photo_pending = False
+        conn_hello = False
+        ended_cleanly = False
+
+        _sm = _import_sibling("state_machine")
+        _invalid = getattr(_sm, "InvalidTransition", None)
+        invalid_types = (_invalid,) if isinstance(_invalid, type) else ()
+
+        async def send_error(code: str, message: Any, fatal: bool = False) -> None:
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": code,
+                        "message": str(message),
+                        "fatal": bool(fatal),
+                    }
+                )
+            except Exception:
+                pass
+
+        async def process_and_reply(sealed_list: list) -> list:
+            """Process sealed segments, collect gaps, reply with both."""
+            try:
+                batch = _process_sealed(entry, session_id, sealed_list, strict=False)
+            except HTTPException as exc:
+                await send_error("SERVER_BUSY", exc.detail or "pipeline is unavailable")
+                batch = []
+            new_gaps = _collect_gaps(entry, session_id)
+            try:
+                await websocket.send_json(
+                    {"type": "segments", "segments": batch, "gaps": new_gaps}
+                )
+            except Exception:
+                pass
+            return batch
+
+        def frame_seen(key: tuple) -> bool:
+            return key in (entry.get("seen_frames") or {})
+
+        def frame_mark(key: tuple) -> None:
+            seen = entry.setdefault("seen_frames", {})
+            seen[key] = True
+            # Bounded dedupe memory: identities far behind the live
+            # edge cannot be replayed again in practice.
+            while len(seen) > 8192:
+                seen.pop(next(iter(seen)), None)
+
+        async def handle_bridge_audio(frame: dict) -> None:
+            payload = frame["payload"]
+            flags = frame["flags"]
+            seg_idx = frame["seg_idx"]
+            key = (
+                "bridge",
+                seg_idx,
+                frame["frame_seq"],
+                frame["capture_ts_ms"],
+                len(payload),
+            )
+            if frame_seen(key):
+                # Reconnect replay of a frame the server already has
+                # (PROTOCOL.md section 6): drop the duplicate, never
+                # append the same audio twice.
+                entry["duplicate_frames"] = int(entry.get("duplicate_frames") or 0) + 1
+                return
+            if len(payload) == 0:
+                if flags & FLAG_FINAL:
+                    return  # Pure end-of-segment marker, no audio.
+                entry["malformed_frames"] = int(entry.get("malformed_frames") or 0) + 1
+                await send_error("BAD_PROTOCOL", "audio frame with an empty payload")
+                return
+            if (
+                len(payload) % 2
+                or len(payload) > FRAME_BYTES
+                or (len(payload) < FRAME_BYTES and not (flags & FLAG_FINAL))
+            ):
+                # Truncated final sample, an oversize payload, or a
+                # short frame that is not the segment's last: the
+                # frame is dropped whole and the loss is a timeline
+                # gap record, not silent stitching.
+                entry["malformed_frames"] = int(entry.get("malformed_frames") or 0) + 1
+                _note_gap(
+                    entry,
+                    "FRAME_DROPPED",
+                    dropped_bytes=len(payload),
+                    detail="malformed audio frame dropped whole (seg %d, %d payload bytes)"
+                    % (seg_idx, len(payload)),
+                )
+                _collect_gaps(entry, session_id)
+                await send_error(
+                    "BAD_PROTOCOL", "audio frame payload is truncated or oversize"
+                )
+                return
+            state = _state_str(controller)
+            if state in ("IDLE", "ARMED", "PAUSED"):
+                # IDLE / ARMED: the controller routes this into the
+                # pre-roll ring (server side pre-roll feed). PAUSED:
+                # the controller drops and counts it, attributed to
+                # the open pause gap. Either way the controller owns
+                # the routing; ingest only validates the frame.
+                controller.push_audio(payload)
+                frame_mark(key)
+                return
+            if state == "ENDED":
+                await send_error("BAD_PROTOCOL", "audio frame after session end")
+                return
+            # RECORDING.
+            expected = getattr(controller, "next_seq", None)
+            if expected is not None and seg_idx < expected:
+                entry["duplicate_frames"] = int(entry.get("duplicate_frames") or 0) + 1
+                _note_gap(
+                    entry,
+                    "LATE_FRAME",
+                    dropped_bytes=len(payload),
+                    detail="frame for already sealed segment %d dropped" % seg_idx,
+                )
+                return
+            if expected is not None and seg_idx > expected:
+                entry["malformed_frames"] = int(entry.get("malformed_frames") or 0) + 1
+                await send_error(
+                    "BAD_PROTOCOL",
+                    "audio frame for segment %d before its talk_start" % seg_idx,
+                )
+                return
+            last = entry.get("last_frame")
+            if isinstance(last, dict) and last.get("seg_idx") == seg_idx:
+                expected_ts = int(last["capture_ts_ms"]) + int(last["duration_ms"])
+                capture_ts = int(frame["capture_ts_ms"])
+                if capture_ts > expected_ts + 50:
+                    missing_ms = capture_ts - expected_ts
+                    _note_gap(
+                        entry,
+                        "FRAME_GAP",
+                        duration_s=missing_ms / 1000.0,
+                        dropped_bytes=int(missing_ms * sample_rate * 2 / 1000),
+                        detail="%d ms of audio missing inside segment %d"
+                        % (missing_ms, seg_idx),
+                    )
+            controller.push_audio(payload)
+            frame_mark(key)
+            entry["last_frame"] = {
+                "seg_idx": seg_idx,
+                "capture_ts_ms": int(frame["capture_ts_ms"]),
+                "duration_ms": int(len(payload) * 1000 / (sample_rate * 2)),
+            }
+
+        async def handle_bridge_photo(frame: dict) -> None:
+            payload = frame["payload"]
+            if len(payload) > MAX_PHOTO_BYTES:
+                entry["malformed_frames"] = int(entry.get("malformed_frames") or 0) + 1
+                await send_error("BAD_PROTOCOL", "photo frame too large")
+                return
+            if not payload.startswith(JPEG_MAGIC):
+                entry["malformed_frames"] = int(entry.get("malformed_frames") or 0) + 1
+                await send_error("BAD_PROTOCOL", "photo frame is not a JPEG")
+                return
+            entry["latest_photo"] = payload
 
         while True:
             try:
@@ -1082,98 +1648,401 @@ def create_app(
                 continue
             if message.get("type") == "websocket.disconnect":
                 break
+            if entry.get("conn_seq") != my_conn:
+                # Superseded by a newer connection for this session.
+                break
 
             try:
                 text_frame = message.get("text")
                 bytes_frame = message.get("bytes")
 
                 if text_frame is not None:
+                    if len(text_frame) > MAX_TEXT_FRAME_BYTES:
+                        await send_error("BAD_PROTOCOL", "control frame too large")
+                        continue
                     try:
                         payload = json.loads(text_frame)
                     except (ValueError, TypeError) as exc:
-                        raise ValueError("invalid JSON control frame: " + str(exc))
+                        await send_error(
+                            "BAD_PROTOCOL", "invalid JSON control frame: " + str(exc)
+                        )
+                        continue
                     if not isinstance(payload, dict):
-                        raise ValueError("control frame must be a JSON object")
+                        await send_error(
+                            "BAD_PROTOCOL", "control frame must be a JSON object"
+                        )
+                        continue
                     control = payload.get("type")
+                    state = _state_str(controller)
 
-                    if control == "arm":
+                    # A control message naming a different session is
+                    # a protocol violation for that message only.
+                    msg_sid = payload.get("session_id")
+                    if (
+                        control != "hello"
+                        and msg_sid is not None
+                        and str(msg_sid) != session_id
+                    ):
+                        await send_error(
+                            "BAD_PROTOCOL",
+                            "control frame session_id does not match the connection",
+                        )
+                        continue
+
+                    if control == "hello":
+                        proto = payload.get("protocol", 1)
+                        hello_sid = payload.get("session_id") or payload.get(
+                            "resume_session_id"
+                        )
+                        if proto != 1 or (
+                            hello_sid is not None and str(hello_sid) != session_id
+                        ):
+                            await send_error(
+                                "BAD_PROTOCOL",
+                                "hello rejected: unsupported protocol or session mismatch",
+                                fatal=True,
+                            )
+                            try:
+                                await websocket.close()
+                            except Exception:
+                                pass
+                            ended_cleanly = True
+                            break
+                        if entry.get("hello_seen") and entry.get("hello_conn") != my_conn:
+                            # Reconnect for the same session: a resume,
+                            # never a new session (PROTOCOL.md 2 and 6).
+                            _note_gap(
+                                entry,
+                                "RECONNECT",
+                                detail="websocket reconnected; same session resumed",
+                            )
+                            source = payload.get("source") or payload.get("audio_source")
+                            prev_source = entry.get("source")
+                            if (
+                                source
+                                and prev_source
+                                and str(source) != str(prev_source)
+                            ):
+                                _note_gap(
+                                    entry,
+                                    "SOURCE_FAILOVER",
+                                    detail="capture source changed %s -> %s; session continued"
+                                    % (prev_source, source),
+                                )
+                        source = payload.get("source") or payload.get("audio_source")
+                        if source:
+                            entry["source"] = str(source)
+                        entry["hello_seen"] = True
+                        entry["hello_conn"] = my_conn
+                        conn_hello = True
+                        await websocket.send_json(
+                            {
+                                "type": "welcome",
+                                "session_id": session_id,
+                                "server_time": _utc_now_iso(),
+                                "ok": True,
+                            }
+                        )
+
+                    elif control == "ping":
+                        t_mono = payload.get(
+                            "t0_mono_ms", payload.get("t_mono_ms", payload.get("t"))
+                        )
+                        await websocket.send_json(
+                            {
+                                "type": "pong",
+                                "t0_mono_ms": t_mono,
+                                "t_mono_ms": t_mono,
+                                "server_time": _utc_now_iso(),
+                            }
+                        )
+
+                    elif control == "session_start":
+                        # The phone arms locally, then announces the
+                        # session on the socket. Arm server side if
+                        # needed; a duplicate announcement is a no-op.
+                        if state == "IDLE":
+                            controller.arm()
+                        elif state == "ENDED":
+                            await send_error(
+                                "BAD_PROTOCOL", "session_start after session end"
+                            )
+
+                    elif control == "talk_start":
+                        if state == "IDLE":
+                            controller.arm()
+                            controller.start()
+                        elif state == "ARMED":
+                            controller.start()
+                        elif state == "RECORDING":
+                            # Already recording: this opens the next
+                            # segment on the continuous server model.
+                            # A seg_idx that disagrees with the open
+                            # segment is recorded, not silently
+                            # stitched over.
+                            seg_idx = payload.get("seg_idx")
+                            expected = getattr(controller, "next_seq", None)
+                            if (
+                                isinstance(seg_idx, int)
+                                and expected is not None
+                                and seg_idx != expected
+                            ):
+                                _note_gap(
+                                    entry,
+                                    "SEGMENT_MISMATCH",
+                                    detail="talk_start seg_idx %s, server open segment %s"
+                                    % (seg_idx, expected),
+                                )
+                        else:
+                            await send_error(
+                                "BAD_PROTOCOL", "talk_start in state " + state
+                            )
+
+                    elif control in ("talk_end", "talk_stop", "new_segment"):
+                        if state == "RECORDING":
+                            try:
+                                sealed = controller.new_segment()
+                            except invalid_types:
+                                # Nothing was captured for this
+                                # segment (or this is a replayed
+                                # talk_end): the empty segment is a
+                                # gap record, not a fake segment.
+                                _note_gap(
+                                    entry,
+                                    "EMPTY_SEGMENT",
+                                    detail="talk_end with no audio captured for the segment",
+                                )
+                                await process_and_reply([])
+                            else:
+                                await process_and_reply([sealed])
+                        elif state in ("ARMED", "PAUSED"):
+                            await process_and_reply([])
+                        else:
+                            await send_error(
+                                "BAD_PROTOCOL", "talk_end in state " + state
+                            )
+
+                    elif control in ("pause", "session_pause"):
+                        if state == "RECORDING":
+                            sealed = controller.pause()
+                            await process_and_reply(
+                                [sealed] if sealed is not None else []
+                            )
+                        elif state == "ARMED":
+                            # The controller graph has no ARMED pause
+                            # (pinned by the contract tests); the
+                            # adapter records the client pause so a
+                            # resume can pair with it.
+                            entry["client_paused"] = True
+                            await process_and_reply([])
+                        elif state == "PAUSED":
+                            await process_and_reply([])
+                        else:
+                            await send_error(
+                                "BAD_PROTOCOL", "pause in state " + state
+                            )
+
+                    elif control in ("resume", "session_resume"):
+                        if state == "PAUSED":
+                            controller.resume()
+                            entry["client_paused"] = False
+                            # Close the pause gap into the offset now,
+                            # before any later segment is processed.
+                            _collect_gaps(entry, session_id)
+                        elif entry.get("client_paused"):
+                            entry["client_paused"] = False
+                        elif state == "RECORDING":
+                            pass  # Duplicate or replayed resume.
+                        else:
+                            await send_error(
+                                "BAD_PROTOCOL", "resume in state " + state
+                            )
+
+                    elif control == "arm":
                         controller.arm()
                     elif control == "start":
                         controller.start()
-                    elif control == "resume":
-                        controller.resume()
-                    elif control == "pause":
-                        sealed = controller.pause()
-                        batch = _process_sealed(
-                            entry, session_id, [sealed] if sealed is not None else []
-                        )
-                        await websocket.send_json({"type": "segments", "segments": batch})
-                    elif control in ("talk_stop", "new_segment"):
-                        sealed = controller.new_segment()
-                        batch = _process_sealed(
-                            entry, session_id, [sealed] if sealed is not None else []
-                        )
-                        await websocket.send_json({"type": "segments", "segments": batch})
                     elif control == "photo":
                         inline = _first_present(payload, "photo_b64", "data", "photo")
                         if inline is not None:
+                            if not isinstance(inline, str):
+                                raise ValueError("inline photo must be a base64 string")
                             try:
-                                entry["latest_photo"] = base64.b64decode(inline)
-                            except (binascii.Error, ValueError) as exc:
+                                decoded = base64.b64decode(inline, validate=True)
+                            except (binascii.Error, ValueError, TypeError) as exc:
                                 raise ValueError("invalid base64 photo: " + str(exc))
+                            if len(decoded) > MAX_PHOTO_BYTES:
+                                raise ValueError("photo too large")
+                            if not decoded.startswith(JPEG_MAGIC):
+                                raise ValueError("photo is not a JPEG")
+                            entry["latest_photo"] = decoded
                             photo_pending = False
                         else:
                             # The next binary frame on this socket is a JPEG.
                             photo_pending = True
-                    elif control == "end":
-                        result = controller.end()
-                        if result is None:
-                            sealed_list = []
-                        elif isinstance(result, (list, tuple)):
-                            sealed_list = list(result)
-                        else:
-                            sealed_list = [result]
-                        batch = _process_sealed(entry, session_id, sealed_list)
+
+                    elif control == "photo_meta":
+                        # Metadata for the photo binary frame that
+                        # follows it (PROTOCOL.md 5.2). The frame
+                        # itself is self describing; this is kept for
+                        # the record only.
+                        entry["last_photo_meta"] = {
+                            "photo_id": payload.get("photo_id"),
+                            "seq": payload.get("seq"),
+                            "captured_at": payload.get("captured_at"),
+                            "eager": payload.get("eager"),
+                            "bytes": payload.get("bytes"),
+                        }
+
+                    elif control == "tag_moment":
+                        entry.setdefault("tags", []).append(
+                            {
+                                "t_mono_ms": payload.get(
+                                    "t_mono_ms", payload.get("t0_mono_ms")
+                                ),
+                                "source": payload.get("source"),
+                            }
+                        )
+
+                    elif control in ("end", "session_end"):
+                        stats = payload.get("stats")
+                        if isinstance(stats, dict):
+                            entry["client_stats"] = stats
+                            staged_dropped = stats.get("chunks_dropped")
+                            if isinstance(staged_dropped, int) and staged_dropped > 0:
+                                _note_gap(
+                                    entry,
+                                    "STAGED_DROPS",
+                                    detail="%d staged frames were evicted on the phone before replay"
+                                    % staged_dropped,
+                                )
+                        sealed_list: list = []
+                        if state in ("ARMED", "RECORDING", "PAUSED"):
+                            result = controller.end()
+                            if isinstance(result, (list, tuple)):
+                                sealed_list = list(result)
+                            elif result is not None:
+                                sealed_list = [result]
+                        try:
+                            batch = _process_sealed(
+                                entry, session_id, sealed_list, strict=False
+                            )
+                        except HTTPException as exc:
+                            await send_error(
+                                "SERVER_BUSY", exc.detail or "pipeline is unavailable"
+                            )
+                            batch = []
+                        new_gaps = _collect_gaps(entry, session_id)
                         if batch:
                             await websocket.send_json(
-                                {"type": "segments", "segments": batch}
+                                {
+                                    "type": "segments",
+                                    "segments": batch,
+                                    "gaps": new_gaps,
+                                }
                             )
                         _end_db_session(session_id)
                         await websocket.send_json({"type": "session_ended"})
+                        ended_cleanly = True
                         try:
                             await websocket.close()
                         except Exception:
                             pass
-                        return
+                        break
+
+                    elif control == "capture_now":
+                        # Server to client only; a client sending it
+                        # is ignored like any other unknown type.
+                        entry["unknown_controls"] = (
+                            int(entry.get("unknown_controls") or 0) + 1
+                        )
                     else:
-                        raise ValueError("unknown control type: " + str(control))
+                        # PROTOCOL.md section 3: unknown message types
+                        # must be ignored, not treated as errors.
+                        entry["unknown_controls"] = (
+                            int(entry.get("unknown_controls") or 0) + 1
+                        )
 
                 elif bytes_frame is not None:
                     data = bytes(bytes_frame)
-                    if photo_pending:
-                        entry["latest_photo"] = data
+                    if len(data) >= 2 and data[:2] == BRIDGE_MAGIC:
+                        # Bridge frame (PROTOCOL.md section 4). This
+                        # check comes before the legacy photo_pending
+                        # path: a typed frame describes itself, and a
+                        # photo frame must never be routed into the
+                        # audio path as PCM.
+                        try:
+                            frame = parse_binary_frame(data)
+                        except FrameError as exc:
+                            entry["malformed_frames"] = (
+                                int(entry.get("malformed_frames") or 0) + 1
+                            )
+                            await send_error("BAD_PROTOCOL", str(exc))
+                            continue
+                        if not conn_hello:
+                            entry["malformed_frames"] = (
+                                int(entry.get("malformed_frames") or 0) + 1
+                            )
+                            await send_error(
+                                "BAD_PROTOCOL",
+                                "binary frame received before hello on this connection",
+                            )
+                            continue
+                        if frame["kind"] == KIND_PHOTO:
+                            await handle_bridge_photo(frame)
+                        else:
+                            await handle_bridge_audio(frame)
+                    elif photo_pending:
+                        photo = data
+                        if len(photo) > MAX_PHOTO_BYTES:
+                            raise ValueError("photo frame too large")
+                        if not photo.startswith(JPEG_MAGIC):
+                            raise ValueError("photo frame is not a JPEG")
+                        entry["latest_photo"] = photo
                         photo_pending = False
                     else:
+                        # Legacy frame: 16 byte "<IIQ" header plus PCM.
+                        if len(data) > MAX_AUDIO_FRAME_BYTES + AUDIO_HEADER.size:
+                            raise ValueError("audio frame too large")
                         if len(data) < AUDIO_HEADER.size:
                             raise ValueError(
                                 "audio frame shorter than the 16 byte header"
                             )
                         seg_idx, frame_seq, capture_ts_ms = AUDIO_HEADER.unpack_from(data, 0)
-                        # Header fields are bookkeeping for gap detection in
-                        # the controller and pipeline; the PCM payload is
-                        # everything after the 16 byte header.
-                        _ = (seg_idx, frame_seq, capture_ts_ms)
-                        controller.push_audio(data[AUDIO_HEADER.size:])
+                        legacy_payload = data[AUDIO_HEADER.size:]
+                        legacy_key = (
+                            "legacy",
+                            seg_idx,
+                            frame_seq,
+                            capture_ts_ms,
+                            len(legacy_payload),
+                        )
+                        if frame_seen(legacy_key):
+                            entry["duplicate_frames"] = (
+                                int(entry.get("duplicate_frames") or 0) + 1
+                            )
+                            continue
+                        controller.push_audio(legacy_payload)
+                        frame_mark(legacy_key)
 
             except WebSocketDisconnect:
                 break
+            except HTTPException as exc:
+                await send_error("SERVER_BUSY", exc.detail or "server busy")
+            except invalid_types as exc:
+                await send_error("INVALID_TRANSITION", str(exc) or "invalid transition")
             except Exception as exc:
-                try:
-                    await websocket.send_json(
-                        {"type": "error", "message": str(exc) or exc.__class__.__name__}
-                    )
-                except Exception:
-                    break
+                await send_error(
+                    "BAD_PROTOCOL", str(exc) or exc.__class__.__name__
+                )
+
+        entry["connected"] = False
+        if not ended_cleanly and entry.get("conn_seq") == my_conn:
+            # Dropped without session_end: the session stays open on
+            # the server (same id, same controller, same timeline)
+            # and a reconnect hello resumes it. Nothing is sealed or
+            # discarded just because the socket went away.
+            entry["disconnected_monotonic"] = time.monotonic()
 
     return app
 
@@ -1194,8 +2063,12 @@ def main() -> None:
 
     settings = _load_settings()
     port = int(getattr(settings, "port", DEFAULT_PORT) or DEFAULT_PORT)
+    # Bind only where config says (HOST env, default 127.0.0.1). The
+    # API has no auth; binding 0.0.0.0 would expose transcripts,
+    # enrollment, and deletion to every network the laptop joins.
+    host = str(getattr(settings, "host", None) or "127.0.0.1")
     app = create_app(settings=settings)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

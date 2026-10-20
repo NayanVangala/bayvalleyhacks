@@ -3,6 +3,9 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
+*.local.xcconfig
 data/
 *.db
 *.sqlite3

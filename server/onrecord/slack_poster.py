@@ -18,6 +18,24 @@ import json
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
+
+
+def _is_allowed_webhook(url) -> bool:
+    """True only for a real Slack incoming webhook URL.
+
+    The digest contains verbatim conversation quotes. Posting it to
+    whatever URL happens to be in the environment would exfiltrate
+    transcripts if SLACK_WEBHOOK_URL were ever pointed somewhere else,
+    so the destination is pinned to https://hooks.slack.com.
+    """
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    return parsed.scheme == "https" and parsed.hostname == "hooks.slack.com"
 
 
 def _get(obj, key, default=None):
@@ -68,6 +86,13 @@ def post_digest(store, session_id, digest_text, settings, confirmed=False) -> di
         }
 
     webhook_url = _get(settings, "slack_webhook_url")
+
+    if webhook_url and not _is_allowed_webhook(webhook_url):
+        return {
+            "posted": False,
+            "reason": "webhook url rejected: not an https hooks.slack.com URL",
+            "outbox_id": outbox_id,
+        }
 
     if webhook_url:
         payload = json.dumps({"text": digest_text}).encode("utf-8")
