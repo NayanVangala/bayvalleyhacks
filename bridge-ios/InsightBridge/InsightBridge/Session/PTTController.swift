@@ -15,9 +15,9 @@ import Foundation
 /// sink to WSClient via `attach(frameSink:)` and supplies the session clock
 /// via `setClock(_:)`.
 ///
-/// Wire flags (WireProtocol, worker 6): bit0 (0x01) means the frame is
+/// Wire flags (PROTOCOL.md 5.3): bit2 (0x04) means the frame is
 /// pre-roll audio, bit1 (0x02) means the frame is the final frame of a
-/// segment. A frame can carry both bits only in theory; this controller
+/// segment (SEGMENT_END). Bit0 (0x01) is SEGMENT_START, not pre-roll. A frame can carry both bits only in theory; this controller
 /// never sets both, because a pre-roll partial is padded and emitted at
 /// press time, and the final flag is added later at release time.
 ///
@@ -37,9 +37,9 @@ final class PTTController: ObservableObject {
 
     // MARK: - Wire constants
 
-    /// flags bit0: frame is pre-roll audio.
-    static let flagPreRoll: UInt8 = 0x01
-    /// flags bit1: final frame of a segment.
+    /// flags bit2: frame is pre-roll audio (PROTOCOL.md 5.3 PREROLL).
+    static let flagPreRoll: UInt8 = 0x04
+    /// flags bit1: final frame of a segment (PROTOCOL.md 5.3 SEGMENT_END).
     static let flagFinal: UInt8 = 0x02
 
     /// Exact wire frame size in bytes (AudioFormat.frameBytes).

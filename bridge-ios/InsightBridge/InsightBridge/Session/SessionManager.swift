@@ -418,11 +418,14 @@ final class SessionManager: ObservableObject {
         syncMachineMirror()
         segmentStartFrameCount = frameCounter.frames
         segmentStartTsMs = captureTsMs()
-        // PTT drains the 10 s pre-roll ring into the new segment and starts
-        // sealing live frames. The sealed frames reach the server through
-        // the frame sink wired in init.
-        ptt.pressBegan()
+        // talk_start goes on the wire BEFORE the segment's first audio
+        // frame (PROTOCOL.md 5.2 wire order). PTT drains the 10 s
+        // pre-roll ring synchronously inside pressBegan() and emits
+        // those frames through the sink, so the control message must
+        // be sent first or every segment would start with audio frames
+        // ahead of their talk_start.
         sendTalkStart()
+        ptt.pressBegan()
     }
 
     /// Push-to-talk release. Seals the open segment.
@@ -1098,11 +1101,11 @@ final class SessionManager: ObservableObject {
         guard let sessionID = currentSessionID else { return }
         let framesThisSegment = frameCounter.frames - segmentStartFrameCount
         let nowMs = captureTsMs()
-        let durationS = Double(nowMs >= segmentStartTsMs ? nowMs - segmentStartTsMs : 0) / 1000.0
+        let durationMs = Int(nowMs >= segmentStartTsMs ? nowMs - segmentStartTsMs : 0)
         ws.sendControl(.talkEnd(sessionID: sessionID,
                                 segIdx: segIdx,
                                 t1MonoMs: UInt64(nowMs),
-                                durationS: durationS,
+                                durationMs: durationMs,
                                 framesSent: framesThisSegment))
     }
 
@@ -1136,7 +1139,7 @@ final class SessionManager: ObservableObject {
     private func sendSessionEnd(sessionID: UUID, stats: ControlMessage.SessionStats) {
         ws.sendControl(.sessionEnd(sessionID: sessionID,
                                    endedAt: Date(),
-                                   reason: "user_ended",
+                                   reason: "user",
                                    stats: stats))
     }
 }

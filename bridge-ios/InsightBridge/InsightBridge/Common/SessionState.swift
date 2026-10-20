@@ -52,7 +52,10 @@ struct SessionStateMachine {
     @discardableResult
     mutating func beginTalk() -> Bool {
         guard state == .armed else { return false }
-        segmentIndex += 1
+        // segmentIndex is NOT incremented here: it names the segment
+        // currently open, and PROTOCOL.md starts the first segment at
+        // index 0. The count of completed segments advances in
+        // endTalk(), when a segment actually completes.
         state = .recording
         return true
     }
@@ -60,6 +63,7 @@ struct SessionStateMachine {
     @discardableResult
     mutating func endTalk() -> Bool {
         guard state == .recording else { return false }
+        segmentIndex += 1
         state = .armed
         return true
     }

@@ -11,7 +11,9 @@
 //  Binary header layout, exactly 16 bytes:
 //    bytes 0-1:   magic 0x4F 0x52 ("OR")
 //    byte  2:     kind (1 = audio PCM16, 2 = photo JPEG)
-//    byte  3:     flags (bit0 0x01 = pre-roll audio, bit1 0x02 = final frame of segment)
+//    byte  3:     flags (PROTOCOL.md 5.3: bit0 0x01 = segment start,
+//                 bit1 0x02 = segment end, bit2 0x04 = pre-roll audio,
+//                 bit3 0x08 = eager photo)
 //    bytes 4-7:   segIdx UInt32 big-endian (segment index; photos use 0xFFFFFFFF)
 //    bytes 8-11:  frameSeq UInt32 big-endian (per segment for audio, global for photos)
 //    bytes 12-15: captureTsMs UInt32 big-endian (ms since session start)
@@ -29,10 +31,17 @@ public enum FrameKind: UInt8, Equatable {
 }
 
 public enum FrameFlags {
-    /// bit0: this audio frame belongs to the pre-roll buffer.
-    public static let preRoll: UInt8 = 0x01
-    /// bit1: this is the final frame of its segment.
+    /// bit0 (0x01): first frame of a segment (PROTOCOL.md 5.3 SEGMENT_START).
+    public static let segmentStart: UInt8 = 0x01
+    /// bit1 (0x02): this is the final frame of its segment
+    /// (PROTOCOL.md 5.3 SEGMENT_END).
     public static let final: UInt8 = 0x02
+    /// bit2 (0x04): this audio frame belongs to the pre-roll buffer
+    /// (PROTOCOL.md 5.3 PREROLL).
+    public static let preRoll: UInt8 = 0x04
+    /// bit3 (0x08): photo taken eagerly at talk start
+    /// (PROTOCOL.md 5.3 EAGER, photo frames only).
+    public static let eager: UInt8 = 0x08
 }
 
 public struct BinaryFrameHeader: Equatable {
@@ -166,7 +175,7 @@ public struct ControlMessage: Codable, Equatable {
     }
 
     public static let currentProtocolVersion = 1
-    public static let appName = "InsightBridge"
+    public static let appName = "insight-bridge"
 
     public var type: String
     // hello
@@ -188,7 +197,7 @@ public struct ControlMessage: Codable, Equatable {
     public var t0MonoMs: UInt64?
     public var t1MonoMs: UInt64?
     public var audioFormat: AudioFormat?
-    public var durationS: Double?
+    public var durationMs: Int?
     public var framesSent: Int?
     // photo_meta
     public var photoID: String?
@@ -225,7 +234,7 @@ public struct ControlMessage: Codable, Equatable {
         case t0MonoMs = "t0_mono_ms"
         case t1MonoMs = "t1_mono_ms"
         case audioFormat = "audio_format"
-        case durationS = "duration_s"
+        case durationMs = "duration_ms"
         case framesSent = "frames_sent"
         case photoID = "photo_id"
         case seq
@@ -265,6 +274,7 @@ public struct ControlMessage: Codable, Equatable {
     // MARK: Static constructors
 
     public static func hello(
+        sessionID: UUID,
         deviceID: String,
         glassesModel: String,
         transport: String,
@@ -276,6 +286,10 @@ public struct ControlMessage: Codable, Equatable {
         message.protocolVersion = currentProtocolVersion
         message.app = appName
         message.appVersion = appVersion
+        // Fields PROTOCOL.md 3.1 requires in every hello.
+        message.sessionID = sessionID.uuidString
+        message.source = audioSource
+        message.audioFormat = .pcm16
         message.deviceID = deviceID
         message.glassesModel = glassesModel
         message.transport = transport
@@ -309,14 +323,14 @@ public struct ControlMessage: Codable, Equatable {
         sessionID: UUID,
         segIdx: UInt32,
         t1MonoMs: UInt64,
-        durationS: Double,
+        durationMs: Int,
         framesSent: Int
     ) -> ControlMessage {
         var message = ControlMessage(type: "talk_end")
         message.sessionID = sessionID.uuidString
         message.segIdx = segIdx
         message.t1MonoMs = t1MonoMs
-        message.durationS = durationS
+        message.durationMs = durationMs
         message.framesSent = framesSent
         return message
     }
@@ -393,7 +407,9 @@ public struct ControlMessage: Codable, Equatable {
     public static func ping(sessionID: UUID?, tMonoMs: UInt64) -> ControlMessage {
         var message = ControlMessage(type: "ping")
         message.sessionID = sessionID?.uuidString
-        message.tMonoMs = tMonoMs
+        // PROTOCOL.md 3.1: ping carries t0_mono_ms, the same key pong
+        // echoes back. t_mono_ms belongs to tag_moment only.
+        message.t0MonoMs = tMonoMs
         return message
     }
 }
@@ -424,7 +440,7 @@ public enum ServerMessage: Equatable {
             return .welcome(serverTime: stringValue(dict["server_time"]), ok: boolValue(dict["ok"]) ?? true)
         case "pong":
             return .pong(
-                tMonoMs: uint64Value(dict["t_mono_ms"]) ?? 0,
+                tMonoMs: uint64Value(dict["t0_mono_ms"]) ?? uint64Value(dict["t_mono_ms"]) ?? 0,
                 serverTime: stringValue(dict["server_time"])
             )
         case "capture_now":

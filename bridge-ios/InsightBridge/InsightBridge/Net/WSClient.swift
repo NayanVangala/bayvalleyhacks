@@ -13,7 +13,7 @@
 //    replays staged items in original order before new live sends.
 //  - Ping every 15 s. If no pong arrives for over 30 s, the connection
 //    is treated as dropped and the reconnect loop takes over.
-//  - Reconnect backoff: 1, 2, 4, 8, 16 s cap, plus or minus 25% jitter.
+//  - Reconnect backoff: 1, 2, 4, 8, 16, 30 s cap, plus or minus 25% jitter.
 //  - A fatal server error disconnects and does not auto-reconnect.
 //
 //  Pure Foundation (URLSessionWebSocketTask). No third party code.
@@ -290,7 +290,10 @@ public final class WSClient {
 
         lock.lock()
         lastPongAt = Date()
-        reconnectAttempt = 0
+        // reconnectAttempt is NOT reset here: attemptConnect runs on
+        // every retry, so resetting here pinned the backoff at 1 s
+        // forever. It resets on welcome (see handleServerMessage),
+        // which is the first sign a reconnect actually worked.
         lock.unlock()
 
         setConnected(true)
@@ -298,6 +301,7 @@ public final class WSClient {
         startPingLoop()
 
         let hello = ControlMessage.hello(
+            sessionID: sessionID,
             deviceID: deviceID,
             glassesModel: glassesModel,
             transport: transport,
@@ -364,8 +368,9 @@ public final class WSClient {
         let attempt = reconnectAttempt
         lock.unlock()
 
-        // 1, 2, 4, 8, 16, 16, ... seconds, plus or minus 25% jitter.
-        let base = min(16.0, pow(2.0, Double(attempt - 1)))
+        // 1, 2, 4, 8, 16, 30, 30, ... seconds, plus or minus 25%
+        // jitter (PROTOCOL.md section 6 caps the backoff at 30 s).
+        let base = min(30.0, pow(2.0, Double(attempt - 1)))
         let delay = base * Double.random(in: 0.75...1.25)
 
         reconnectTask = Task { [weak self] in
