@@ -24,9 +24,16 @@ SERVER_NAME = "insight-mcp"
 SERVER_VERSION = "0.1.0"
 
 ERR_METHOD_NOT_FOUND = -32601
+ERR_PARSE = -32700
+ERR_INTERNAL = -32603
 
 REASON_PERSON_NOT_FOUND = "PERSON_NOT_FOUND"
 REASON_SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
+REASON_AMBIGUOUS_NAME = "AMBIGUOUS_NAME"
+REASON_NO_VERIFIED = "NO_VERIFIED_SEGMENTS"
+REASON_NO_PEOPLE = "NO_PEOPLE"
+
+GATE_VERIFIED = "VERIFIED"
 
 
 def _jsonable(value):
@@ -222,26 +229,77 @@ class InsightMcpServer:
         return max(1, min(raw, 100))
 
     def _resolve_person(self, store, person_ref):
-        """Resolve a person ref (id or name) against the store's people."""
+        """Resolve a person ref (id or name) against the store's people.
+
+        Returns (person, candidates). An exact id match wins. A name that
+        matches more than one enrolled person returns (None, candidates)
+        with every match: picking the first one silently, as this helper
+        used to do, attributes one person's interactions to another.
+        """
         people = _jsonable(store.list_people())
         ref = str(person_ref).strip()
         for person in people:
             if str(person.get("id")) == ref:
-                return person
+                return person, []
         lowered = ref.lower()
-        for person in people:
-            if str(person.get("name", "")).lower() == lowered:
-                return person
-        return None
+        matches = [
+            person
+            for person in people
+            if str(person.get("name", "")).lower() == lowered
+        ]
+        if len(matches) == 1:
+            return matches[0], []
+        if len(matches) > 1:
+            candidates = [
+                {"id": match.get("id"), "name": match.get("name")}
+                for match in matches
+            ]
+            return None, candidates
+        return None, []
 
     def _interactions_via_store(self, store, person_ref):
-        """Compose list_interactions_with_person from store primitives."""
-        person = self._resolve_person(store, person_ref)
+        """Compose list_interactions_with_person from store primitives.
+
+        Fallback for a service without its own implementation. Mirrors
+        QueryService.list_interactions_with_person: VERIFIED segments
+        only, and every empty case carries a reason code.
+        """
+        base = {
+            "person": None,
+            "candidates": [],
+            "session_count": 0,
+            "segment_count": 0,
+            "interactions": [],
+        }
+        people = _jsonable(store.list_people())
+        if not people:
+            return {**base, "status": "EMPTY", "reason": REASON_NO_PEOPLE}
+        person, candidates = self._resolve_person(store, person_ref)
+        if candidates:
+            return {
+                **base,
+                "status": "EMPTY",
+                "reason": REASON_AMBIGUOUS_NAME,
+                "candidates": candidates,
+            }
         if person is None:
-            raise ToolError(REASON_PERSON_NOT_FOUND)
+            return {**base, "status": "EMPTY", "reason": REASON_PERSON_NOT_FOUND}
         segments = _jsonable(store.segments_for_person(person["id"]))
+        verified = [
+            segment
+            for segment in segments
+            if segment.get("gate_status") == GATE_VERIFIED
+        ]
+        if not verified:
+            reason = REASON_NO_VERIFIED if segments else "NO_MATCHES"
+            return {
+                **base,
+                "status": "EMPTY",
+                "reason": reason,
+                "person": person,
+            }
         by_session = {}
-        for segment in segments:
+        for segment in verified:
             session_id = segment.get("session_id")
             if session_id is not None:
                 by_session.setdefault(session_id, []).append(segment)
@@ -259,9 +317,12 @@ class InsightMcpServer:
             key=lambda item: str((item.get("session") or {}).get("started_at", ""))
         )
         return {
+            "status": "OK",
+            "reason": None,
             "person": person,
+            "candidates": [],
             "session_count": len(interactions),
-            "segment_count": len(segments),
+            "segment_count": len(verified),
             "interactions": interactions,
         }
 
@@ -298,10 +359,38 @@ class InsightMcpServer:
             result = service.get_interaction(session_id)
             if result is None:
                 raise ToolError(REASON_SESSION_NOT_FOUND)
-            return _jsonable(result)
+            payload = _jsonable(result)
+            if isinstance(payload, dict) and not payload.get("segments"):
+                # The session exists but has no VERIFIED segments to
+                # show. Say so with a reason code instead of returning a
+                # bare empty segment list. (Field names avoid colliding
+                # with the session row's own lifecycle "status".)
+                payload["query_status"] = "EMPTY"
+                payload["query_reason"] = REASON_NO_VERIFIED
+            return payload
 
         if name == "get_person_profile":
             person = self._require(arguments, "person")
+            # get_person_profile returns None for both unknown and
+            # ambiguous references. An ambiguous name is not "person not
+            # found": report it with its candidates so the caller can
+            # re-ask by id, and never let it be mistaken for unknown.
+            resolve = getattr(service, "resolve_person", None)
+            if callable(resolve):
+                _person, ambiguous = resolve(person)
+                if ambiguous:
+                    candidates_fn = getattr(service, "person_candidates", None)
+                    candidates = (
+                        _jsonable(candidates_fn(person))
+                        if callable(candidates_fn)
+                        else []
+                    )
+                    return {
+                        "status": "EMPTY",
+                        "reason": REASON_AMBIGUOUS_NAME,
+                        "candidates": candidates,
+                        "results": [],
+                    }
             result = service.get_person_profile(person)
             if result is None:
                 raise ToolError(REASON_PERSON_NOT_FOUND)
@@ -324,9 +413,14 @@ class InsightMcpServer:
         return self._result_content(message, is_error=True)
 
     def handle_tools_call(self, params):
-        params = params or {}
+        if not isinstance(params, dict):
+            return self._tool_error_content("INVALID_ARGUMENT: params must be an object")
         name = params.get("name")
         arguments = params.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            return self._tool_error_content(
+                "INVALID_ARGUMENT: arguments must be an object"
+            )
         try:
             result = self.call_tool(name, arguments)
         except ToolError as exc:
@@ -409,11 +503,32 @@ class InsightMcpServer:
             try:
                 message = json.loads(line)
             except ValueError:
-                continue  # malformed line: skip without crashing
+                # JSON-RPC parse error: reply with id null instead of
+                # dropping the line silently, then keep serving. A
+                # client waiting on a response can tell the line failed
+                # instead of hanging.
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": ERR_PARSE, "message": "Parse error"},
+                }
+                out_stream.write(json.dumps(response) + "\n")
+                out_stream.flush()
+                continue
             try:
                 response = self.handle(message)
             except Exception:
-                continue  # one bad message must not kill the loop
+                # One bad message must not kill the loop, but it also
+                # must not vanish: answer with an internal error carrying
+                # the request id when there is one.
+                request_id = message.get("id") if isinstance(message, dict) else None
+                if request_id is None:
+                    continue
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": ERR_INTERNAL, "message": "Internal error"},
+                }
             if response is not None:
                 out_stream.write(json.dumps(response) + "\n")
                 out_stream.flush()
