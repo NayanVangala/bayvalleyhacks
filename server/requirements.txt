@@ -1,0 +1,7 @@
+# Core runtime deps. The onrecord package imports cleanly without the ML
+# extras; heavy models are lazy-imported behind interfaces (see interfaces.py).
+fastapi>=0.110
+uvicorn[standard]>=0.29
+# ML extras (install on the demo laptop, not needed for tests):
+#   pip install -e ".[ml]"   (faster-whisper, chromadb, psycopg,
+#   sentence-transformers, insightface, speechbrain)

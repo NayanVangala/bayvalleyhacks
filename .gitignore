@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+data/
+*.db
+*.sqlite3
+node_modules/
+.next/
+.DS_Store
+*.wav
+*.pcm
