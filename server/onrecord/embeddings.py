@@ -79,13 +79,31 @@ class SentenceTransformerEmbedder:
         self.model_name = model_name
         self._model = SentenceTransformer(model_name)
 
+    def _checked(self, vector) -> list[float]:
+        """Convert one model output row to floats, checking its size.
+
+        Every text vector lands in the same Chroma collection, whose
+        dimension is fixed by the first insert. A model whose output
+        is not DIM_TEXT wide (for example a 768 wide model passed as
+        model_name) would otherwise fail deep inside the vector store
+        or, worse, sit next to 384 wide vectors and corrupt search.
+        Reject it here, at the boundary, with the model named.
+        """
+        values = [float(v) for v in vector]
+        if len(values) != DIM_TEXT:
+            raise ValueError(
+                f"text embedder model {self.model_name!r} produced a "
+                f"{len(values)} dimensional vector, expected {DIM_TEXT}"
+            )
+        return values
+
     def embed(self, text: str) -> list[float]:
         result = self._model.encode(text, normalize_embeddings=True)
         # encode returns a numpy array for a single input; tolist gives
         # plain Python floats.
         if hasattr(result, "tolist"):
-            return [float(v) for v in result.tolist()]
-        return [float(v) for v in result]
+            result = result.tolist()
+        return self._checked(result)
 
     def embed_many(self, texts: Sequence[str]) -> list[list[float]]:
         text_list = list(texts)
@@ -93,8 +111,8 @@ class SentenceTransformerEmbedder:
             return []
         result = self._model.encode(text_list, normalize_embeddings=True)
         if hasattr(result, "tolist"):
-            return [[float(v) for v in row] for row in result.tolist()]
-        return [[float(v) for v in row] for row in result]
+            result = result.tolist()
+        return [self._checked(row) for row in result]
 
 
 def get_text_embedder(settings=None):
