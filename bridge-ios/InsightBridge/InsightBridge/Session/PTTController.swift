@@ -8,18 +8,28 @@ import Foundation
 /// the pre-roll drains as the first frames of the new segment, flagged as
 /// pre-roll on the wire, so speech just before the press is kept. While
 /// talking, fed audio is emitted live as exact 3200-byte frames. On
-/// `pressEnded()` the open segment is sealed with a final-flagged frame.
+/// `pressEnded()` any pending partial frame is emitted short (never
+/// padded) carrying the FINAL flag; nothing silent is emitted just to
+/// carry FINAL (PROTOCOL.md 5.1).
 ///
 /// This type owns framing only. Session lifecycle and state transitions live
 /// in SessionManager (SessionStateMachine); SessionManager wires the frame
 /// sink to WSClient via `attach(frameSink:)` and supplies the session clock
 /// via `setClock(_:)`.
 ///
-/// Wire flags (PROTOCOL.md 5.3): bit2 (0x04) means the frame is
-/// pre-roll audio, bit1 (0x02) means the frame is the final frame of a
-/// segment (SEGMENT_END). Bit0 (0x01) is SEGMENT_START, not pre-roll. A frame can carry both bits only in theory; this controller
-/// never sets both, because a pre-roll partial is padded and emitted at
-/// press time, and the final flag is added later at release time.
+/// Wire flags (PROTOCOL.md 5.3): bit0 (0x01) means the frame is pre-roll
+/// audio (PREROLL), bit1 (0x02) means the frame is the final frame of a
+/// segment (FINAL). A partial pre-roll tail is sent as a SHORT frame with
+/// the PREROLL flag set, never zero-padded: the flag, not the padding,
+/// marks pre-roll audio.
+///
+/// XCODE-VERIFY: the old code had PREROLL at bit2 (0x04). The wire spec
+/// (PROTOCOL.md 5.3) defines PREROLL as bit0 (0x01). Confirm the server
+/// reads pre-roll from bit0 and that no path on the phone still sets
+/// 0x04 for pre-roll. Also confirm the FINAL bit stays 0x02 and that no
+/// SEGMENT_START/EAGER bits are set anywhere on the wire (bits 2-7 are
+/// reserved, must be sent as 0). WireProtocol.FrameFlags was updated to
+/// match.
 ///
 /// Threading: all public methods are serialized with an internal lock, so
 /// `feed(_:)` may arrive from the audio queue while press events arrive from
@@ -37,9 +47,9 @@ final class PTTController: ObservableObject {
 
     // MARK: - Wire constants
 
-    /// flags bit2: frame is pre-roll audio (PROTOCOL.md 5.3 PREROLL).
-    static let flagPreRoll: UInt8 = 0x04
-    /// flags bit1: final frame of a segment (PROTOCOL.md 5.3 SEGMENT_END).
+    /// flags bit0: frame is pre-roll audio (PROTOCOL.md 5.3 PREROLL).
+    static let flagPreRoll: UInt8 = 0x01
+    /// flags bit1: final frame of a segment (PROTOCOL.md 5.3 FINAL).
     static let flagFinal: UInt8 = 0x02
 
     /// Exact wire frame size in bytes (AudioFormat.frameBytes).
@@ -181,18 +191,20 @@ final class PTTController: ObservableObject {
 
         // Pre-roll normally holds whole frames because feed appends whole
         // chunks. A trailing partial can still occur if a source ever sends
-        // a non-frame-aligned chunk while armed; it is zero-padded to a
-        // full frame here, and the padding is not counted in
-        // segmentAudioBytes, so duration checks use real audio only.
+        // a non-frame-aligned chunk while armed. It is emitted as a SHORT
+        // frame flagged PREROLL (PROTOCOL.md 5.1: the last audio frame of
+        // a segment may be shorter than 3200 bytes; receivers must not
+        // assume padding). Never zero-pad here: the PREROLL flag, not the
+        // frame length, marks pre-roll audio.
+        // XCODE-VERIFY: confirm on the Mac that a partial pre-roll tail
+        // arrives at the server as a short frame with bit0 (0x01) set and
+        // NO zero padding appended.
         let frameCount = (drained.count + Self.frameBytes - 1) / Self.frameBytes
         let pressTsMs = clock()
         for index in 0..<frameCount {
             let start = index * Self.frameBytes
             let end = min(start + Self.frameBytes, drained.count)
-            var frame = Data(drained[start..<end])
-            if frame.count < Self.frameBytes {
-                frame.append(Data(count: Self.frameBytes - frame.count))
-            }
+            let frame = Data(drained[start..<end])
             let framesAfterThis = UInt32(frameCount - 1 - index)
             let backMs = framesAfterThis * Self.frameDurationMs
             let captureTsMs = pressTsMs >= backMs ? pressTsMs - backMs : 0
@@ -202,10 +214,17 @@ final class PTTController: ObservableObject {
 
     /// End and seal the open segment. Ignored when not talking.
     ///
-    /// A pending partial frame is zero-padded and emitted with the final
-    /// flag. When no partial is pending but frames were emitted, one silent
-    /// frame carrying only the final flag is emitted, so every kept segment
-    /// ends with exactly one final-flagged frame on the wire.
+    /// A pending partial frame is emitted SHORT with the final flag
+    /// (PROTOCOL.md 5.1: the last audio frame of a segment may be shorter
+    /// than 3200 bytes; never pad). When no partial is pending, nothing
+    /// extra is emitted: no silent frame is ever sent just to carry
+    /// FINAL. The segment boundary is unambiguous from the
+    /// `talk_end` control message that brackets the segment.
+    /// XCODE-VERIFY: confirm on the Mac / against the server that a
+    /// segment whose press ends on a full-frame boundary (no pending
+    /// bytes) seals cleanly without a final-flagged frame, and that a
+    /// segment ending with a partial emits exactly one short FINAL frame
+    /// with no zero padding.
     ///
     /// Minimum segment rule: if total audio (pre-roll plus live, padding
     /// excluded) is under 300 ms, the segment is discarded. It is not
@@ -222,13 +241,8 @@ final class PTTController: ObservableObject {
             let segmentIndex = currentSegmentIndex
 
             if !pending.isEmpty {
-                var frame = pending
-                frame.append(Data(count: Self.frameBytes - frame.count))
+                emitLocked(flags: Self.flagFinal, pcm: pending, captureTsMs: clock())
                 pending.removeAll()
-                emitLocked(flags: Self.flagFinal, pcm: frame, captureTsMs: clock())
-            } else if segmentFramesEmitted > 0 {
-                let silence = Data(count: Self.frameBytes)
-                emitLocked(flags: Self.flagFinal, pcm: silence, captureTsMs: clock())
             }
 
             if segmentAudioBytes < Self.minimumSegmentBytes {

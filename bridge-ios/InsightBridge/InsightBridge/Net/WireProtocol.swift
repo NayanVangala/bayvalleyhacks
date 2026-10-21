@@ -11,9 +11,9 @@
 //  Binary header layout, exactly 16 bytes:
 //    bytes 0-1:   magic 0x4F 0x52 ("OR")
 //    byte  2:     kind (1 = audio PCM16, 2 = photo JPEG)
-//    byte  3:     flags (PROTOCOL.md 5.3: bit0 0x01 = segment start,
-//                 bit1 0x02 = segment end, bit2 0x04 = pre-roll audio,
-//                 bit3 0x08 = eager photo)
+//    byte  3:     flags (PROTOCOL.md 5.3: bit0 0x01 = PREROLL audio,
+//                 bit1 0x02 = FINAL frame of a segment, bits 2-7 reserved,
+//                 must be sent as 0)
 //    bytes 4-7:   segIdx UInt32 big-endian (segment index; photos use 0xFFFFFFFF)
 //    bytes 8-11:  frameSeq UInt32 big-endian (per segment for audio, global for photos)
 //    bytes 12-15: captureTsMs UInt32 big-endian (ms since session start)
@@ -31,17 +31,23 @@ public enum FrameKind: UInt8, Equatable {
 }
 
 public enum FrameFlags {
-    /// bit0 (0x01): first frame of a segment (PROTOCOL.md 5.3 SEGMENT_START).
-    public static let segmentStart: UInt8 = 0x01
-    /// bit1 (0x02): this is the final frame of its segment
-    /// (PROTOCOL.md 5.3 SEGMENT_END).
-    public static let final: UInt8 = 0x02
-    /// bit2 (0x04): this audio frame belongs to the pre-roll buffer
+    /// bit0 (0x01): this audio frame is pre-roll audio
     /// (PROTOCOL.md 5.3 PREROLL).
-    public static let preRoll: UInt8 = 0x04
-    /// bit3 (0x08): photo taken eagerly at talk start
-    /// (PROTOCOL.md 5.3 EAGER, photo frames only).
-    public static let eager: UInt8 = 0x08
+    public static let preRoll: UInt8 = 0x01
+    /// bit1 (0x02): this is the final frame of its segment
+    /// (PROTOCOL.md 5.3 FINAL).
+    public static let final: UInt8 = 0x02
+    // NOTE: the old segmentStart (0x01) and eager (0x08) bits were
+    // deleted. They had no call sites and contradicted the wire spec:
+    // PROTOCOL.md 5.3 assigns bit0 to PREROLL and reserves bits 2-7
+    // (must be sent as 0). Do not reintroduce bits here without a
+    // protocol revision.
+    //
+    // XCODE-VERIFY: this file and PTTController.flagPreRoll are the two
+    // canonical PREROLL definitions; both must stay 0x01. Confirm the
+    // server reads pre-roll from bit0 (0x01), not the old bit2 (0x04),
+    // and that no frame on the wire still sets 0x04, 0x08, or any of
+    // the reserved bits.
 }
 
 public struct BinaryFrameHeader: Equatable {

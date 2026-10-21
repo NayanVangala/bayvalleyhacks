@@ -146,14 +146,18 @@ final class EnrollmentViewModel: ObservableObject {
         }
 
         step = .uploading
-        let voiceWAV = EnrollmentAPI.wavWrapPCM(
-            voicePCM, sampleRate: AudioFormat.sampleRate)
+        // XCODE-VERIFY: the voice contract is RAW PCM16 little endian,
+        // 16 kHz, mono with NO WAV header (base64 of the raw bytes;
+        // the server rejects a RIFF header with 422).
+        // VoiceSampleRecorder produces exactly that (see its output
+        // contract). Do not wrap this in WAV here.
+        let voicePCM = voicePCM
 
         do {
             let result = try await api.enroll(
                 name: trimmedName,
                 photoJPEG: photoJPEG,
-                voiceWAV: voiceWAV)
+                voicePCM: voicePCM)
             step = .done(result)
         } catch let error as EnrollmentError {
             step = .failed(error.localizedDescription)

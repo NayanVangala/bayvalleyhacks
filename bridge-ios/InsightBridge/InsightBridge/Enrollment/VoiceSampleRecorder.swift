@@ -7,8 +7,15 @@ import Foundation
 //
 // Output contract: raw PCM16 little endian, 16 kHz, mono.
 // Exactly 10.0 s, so exactly 320,000 bytes. Stopping early pads with
-// silence (zero bytes). Running long is truncated. Callers can hand
-// the result straight to EnrollmentAPI.wavWrapPCM.
+// silence (zero bytes). Running long is truncated. Callers hand the
+// result straight to EnrollmentAPI.enroll(name:photoJPEG:voicePCM:),
+// which base64-encodes it as voice_b64; the wire carries RAW PCM, no
+// WAV header (the server rejects a RIFF header with 422).
+//
+// XCODE-VERIFY: confirm on the Mac that the recorder still outputs
+// raw PCM16 little endian, 16 kHz, mono (2 bytes per sample, 320000
+// bytes for 10 s) with no WAV header bytes, since the enrollment
+// server contract takes raw PCM.
 //
 // Conversion discipline matches PhoneSource: the hardware format is
 // converted directly to PCM16 16 kHz mono with a single

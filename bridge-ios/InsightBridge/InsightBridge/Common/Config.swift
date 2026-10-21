@@ -54,10 +54,13 @@ enum Config {
             ?? URL(string: "ws://192.168.2.1:8000/ingest/audio?session_id=\(sessionID.uuidString)")!
     }
 
-    /// Enrollment endpoint. The enrollment flow posts face photos and
-    /// voice samples for one person to this URL.
+    /// Enrollment endpoint. The enrollment flow posts one person (JSON:
+    /// {name, photo_b64, voice_b64}) to this URL.
+    /// XCODE-VERIFY: confirm with the server team that enrollment lives
+    /// at POST /api/enroll (alias /api/people/enroll) and not at
+    /// the old /enroll multipart path.
     static var enrollmentURL: URL {
-        httpBaseURL.appendingPathComponent("enroll")
+        httpBaseURL.appendingPathComponent("api/enroll")
     }
 
     // MARK: - Watchdog and failover

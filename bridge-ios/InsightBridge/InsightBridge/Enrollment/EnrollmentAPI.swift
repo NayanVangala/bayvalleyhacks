@@ -1,26 +1,36 @@
 import Foundation
 
-// MARK: - Enrollment server contract (assumed, Revision 2)
+// MARK: - Enrollment server contract (Revision 3, per /tmp/enroll-contract.md)
 //
-// POST {Config.httpBaseURL}/enroll
-// Default base: http://192.168.2.1:8000 (see Common/Config.swift, worker 1).
-// Config.enrollmentURL is expected to be httpBaseURL + "/enroll".
+// POST {Config.httpBaseURL}/api/enroll
+// Also POST {Config.httpBaseURL}/api/people/enroll (alias, identical
+// contract). Default base: http://192.168.2.1:8000 (see
+// Common/Config.swift). Config.enrollmentURL is httpBaseURL +
+// "/api/enroll"; this client posts to /api/enroll only.
 //
-// Request: multipart/form-data with fields:
-//   name        text, the person's display name
-//   photo       file, filename "photo.jpg", Content-Type image/jpeg,
-//               enrollment face photo (server computes an ArcFace embedding)
-//   voice       file, filename "voice.wav", Content-Type audio/wav,
-//               10 s PCM16 16 kHz mono WAV (server computes an ECAPA
-//               voice embedding)
-//   sample_rate text, "16000"
+// Request: application/json, one JSON object:
+//   name      string, required, non-blank. The person's display name.
+//   photo_b64 string, required. Base64 of a JPEG photo (must start
+//             with the JPEG magic bytes FF D8 FF). The server computes
+//             an ArcFace face embedding.
+//   voice_b64 string, required. Base64 of RAW PCM16 little endian,
+//             16 kHz, mono audio. NO WAV header, NO RIFF header, no
+//             container of any kind: the server rejects a RIFF header
+//             with 422. See rawPCMStrippingWAVHeader(_:) for the
+//             WAV-strip guard. The server computes an ECAPA voice
+//             embedding.
+//   notes     string, optional, free text.
 //
-// Success (2xx) JSON:
-//   { "person_id": "<uuid>", "name": "...",
-//     "face_enrolled": true, "voice_enrolled": true }
+// The old Revision 2 multipart/form-data WAV path was deleted entirely.
 //
-// Error (non-2xx) JSON:
-//   { "detail": "..." }
+// Success: HTTP 200 with a JSON person object containing at least
+// `id` and `name` (older builds also accept `person_id`).
+//
+// Failure: 422 for client-fixable payload problems (missing fields,
+// bad base64, non-JPEG photo, WAV/RIFF voice header, voice under 1 s
+// or odd byte count, ML rejection), 413 for oversized photo/voice,
+// 503 when the enrollment service is down. The phone treats 422/413
+// as "fix the payload and retry" and anything else as server side.
 //
 // Embeddings live server side (ChromaDB). The phone never stores or
 // computes face or voice embeddings.
@@ -35,9 +45,58 @@ struct EnrollmentResult: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case personID = "person_id"
+        case id
         case name
         case faceEnrolled = "face_enrolled"
         case voiceEnrolled = "voice_enrolled"
+    }
+
+    init(personID: String, name: String, faceEnrolled: Bool, voiceEnrolled: Bool) {
+        self.personID = personID
+        self.name = name
+        self.faceEnrolled = faceEnrolled
+        self.voiceEnrolled = voiceEnrolled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // The wire contract names the key `id`; accept the legacy
+        // `person_id` too.
+        if let id = try container.decodeIfPresent(String.self, forKey: .personID) {
+            personID = id
+        } else {
+            personID = try container.decode(String.self, forKey: .id)
+        }
+        name = try container.decode(String.self, forKey: .name)
+        // The enrolled flags are informational; tolerate a server that
+        // returns only the id and name.
+        faceEnrolled = try container.decodeIfPresent(Bool.self, forKey: .faceEnrolled) ?? false
+        voiceEnrolled = try container.decodeIfPresent(Bool.self, forKey: .voiceEnrolled) ?? false
+    }
+}
+
+// MARK: - Request
+
+/// The JSON body posted to /api/enroll.
+private struct EnrollmentRequestBody: Encodable {
+    let name: String
+    let photo_b64: String
+    let voice_b64: String
+    let notes: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case photo_b64
+        case voice_b64
+        case notes
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        try container.encode(photo_b64, forKey: .photo_b64)
+        try container.encode(voice_b64, forKey: .voice_b64)
+        try container.encodeIfPresent(notes, forKey: .notes)
     }
 }
 
@@ -45,8 +104,8 @@ struct EnrollmentResult: Codable, Equatable {
 
 enum EnrollmentError: Error, LocalizedError {
     /// Server answered with a non-2xx status. Associated value is the
-    /// `detail` string from the error body when present, otherwise a
-    /// short status description.
+    /// `detail`/`message` string from the error body when present,
+    /// otherwise a short status description.
     case server(String)
     /// Transport level failure (no route, timeout, TLS, bad response).
     case network(String)
@@ -67,6 +126,8 @@ enum EnrollmentError: Error, LocalizedError {
 
 private struct EnrollmentErrorBody: Decodable {
     let detail: String?
+    let code: String?
+    let message: String?
 }
 
 // MARK: - API client
@@ -92,19 +153,28 @@ final class EnrollmentAPI {
         if baseURL == Config.httpBaseURL {
             return Config.enrollmentURL
         }
-        return baseURL.appendingPathComponent("enroll")
+        // XCODE-VERIFY: confirm the server serves enrollment at
+        // POST /api/enroll (alias /api/people/enroll accepts the same
+        // JSON body) and NOT at the old /enroll multipart path.
+        return baseURL.appendingPathComponent("api/enroll")
     }
 
     /// Uploads one person's enrollment photo and voice sample.
     ///
     /// - Parameters:
-    ///   - name: Display name, sent as the `name` text field.
-    ///   - photoJPEG: JPEG bytes for the `photo` file field.
-    ///   - voiceWAV: WAV bytes for the `voice` file field. Build these
-    ///     from raw PCM with `EnrollmentAPI.wavWrapPCM(_:sampleRate:)`.
+    ///   - name: Display name, sent as the `name` JSON field.
+    ///   - photoJPEG: JPEG bytes for the `photo_b64` field (base64 of
+    ///     the JPEG).
+    ///   - voicePCM: Raw PCM16 little endian 16 kHz mono bytes for the
+    ///     `voice_b64` field (base64 of the RAW PCM, no WAV header).
+    ///     If a caller accidentally passes a WAV file instead, the
+    ///     canonical 44 byte header is stripped first; see
+    ///     `rawPCMStrippingWAVHeader(_:)`.
+    ///   - notes: Optional free text sent as the `notes` field.
     func enroll(name: String,
                 photoJPEG: Data,
-                voiceWAV: Data) async throws -> EnrollmentResult {
+                voicePCM: Data,
+                notes: String? = nil) async throws -> EnrollmentResult {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             throw EnrollmentError.invalidInput("Name is empty.")
@@ -112,23 +182,28 @@ final class EnrollmentAPI {
         guard !photoJPEG.isEmpty else {
             throw EnrollmentError.invalidInput("Photo is empty.")
         }
-        guard !voiceWAV.isEmpty else {
+        guard !voicePCM.isEmpty else {
             throw EnrollmentError.invalidInput("Voice sample is empty.")
         }
 
-        let boundary = "InsightBridge-\(UUID().uuidString)"
+        let body = EnrollmentRequestBody(
+            name: trimmedName,
+            photo_b64: photoJPEG.base64EncodedString(),
+            voice_b64: Self.rawPCMStrippingWAVHeader(voicePCM).base64EncodedString(),
+            notes: notes
+        )
+        let bodyData: Data
+        do {
+            bodyData = try JSONEncoder().encode(body)
+        } catch {
+            throw EnrollmentError.invalidInput("Could not encode the enrollment request.")
+        }
+
         var request = URLRequest(url: enrollmentEndpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 60
-        request.setValue("multipart/form-data; boundary=\(boundary)",
-                         forHTTPHeaderField: "Content-Type")
-        request.httpBody = Self.multipartBody(
-            boundary: boundary,
-            name: trimmedName,
-            photoJPEG: photoJPEG,
-            voiceWAV: voiceWAV,
-            sampleRate: AudioFormat.sampleRate
-        )
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = bodyData
 
         let data: Data
         let response: URLResponse
@@ -157,71 +232,23 @@ final class EnrollmentAPI {
         }
     }
 
-    // MARK: Multipart body
-
-    static func multipartBody(boundary: String,
-                              name: String,
-                              photoJPEG: Data,
-                              voiceWAV: Data,
-                              sampleRate: Int) -> Data {
-        var body = Data()
-        let crlf = "\r\n"
-
-        func appendTextField(_ field: String, _ value: String) {
-            body.append("--\(boundary)\(crlf)".data(using: .utf8)!)
-            body.append(
-                "Content-Disposition: form-data; name=\"\(field)\"\(crlf)"
-                    .data(using: .utf8)!
-            )
-            body.append(crlf.data(using: .utf8)!)
-            body.append(value.data(using: .utf8)!)
-            body.append(crlf.data(using: .utf8)!)
-        }
-
-        func appendFileField(_ field: String,
-                             filename: String,
-                             contentType: String,
-                             data: Data) {
-            body.append("--\(boundary)\(crlf)".data(using: .utf8)!)
-            body.append(
-                ("Content-Disposition: form-data; name=\"\(field)\"; "
-                    + "filename=\"\(filename)\"\(crlf)")
-                    .data(using: .utf8)!
-            )
-            body.append(
-                "Content-Type: \(contentType)\(crlf)".data(using: .utf8)!
-            )
-            body.append(crlf.data(using: .utf8)!)
-            body.append(data)
-            body.append(crlf.data(using: .utf8)!)
-        }
-
-        appendTextField("name", name)
-        appendFileField("photo",
-                        filename: "photo.jpg",
-                        contentType: "image/jpeg",
-                        data: photoJPEG)
-        appendFileField("voice",
-                        filename: "voice.wav",
-                        contentType: "audio/wav",
-                        data: voiceWAV)
-        appendTextField("sample_rate", String(sampleRate))
-
-        body.append("--\(boundary)--\(crlf)".data(using: .utf8)!)
-        return body
-    }
-
     private static func parseErrorDetail(from data: Data) -> String? {
         guard !data.isEmpty else { return nil }
         if let decoded = try? JSONDecoder().decode(
-            EnrollmentErrorBody.self, from: data),
-           let detail = decoded.detail,
-           !detail.isEmpty {
-            return detail
+            EnrollmentErrorBody.self, from: data) {
+            if let detail = decoded.detail, !detail.isEmpty {
+                return detail
+            }
+            // Server wire-contract error shape: { code, message }.
+            if let message = decoded.message, !message.isEmpty {
+                if let code = decoded.code, !code.isEmpty {
+                    return "\(code): \(message)"
+                }
+                return message
+            }
         }
-        // FastAPI validation errors can return detail as an array or a
-        // nested object. Fall back to the raw body text in that case so
-        // the demo operator sees something real on screen.
+        // Fall back to the raw body text so the demo operator sees
+        // something real on screen.
         if let text = String(data: data, encoding: .utf8),
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return text
@@ -229,61 +256,34 @@ final class EnrollmentAPI {
         return nil
     }
 
-    // MARK: WAV wrapping
+    // MARK: WAV header strip
 
-    /// Wraps raw PCM16 little endian mono samples in a canonical
-    /// 44 byte WAV header.
+    /// Returns the raw PCM inside `data`, stripping the canonical
+    /// 44 byte WAV (RIFF/WAVE, PCM) header when one is present.
     ///
-    /// Pure and deterministic: same input bytes always produce the
-    /// same output bytes. No timestamps, no extra chunks.
-    ///
-    /// Layout: RIFF header, one `fmt ` chunk (PCM, 1 channel, 16 bit),
-    /// then one `data` chunk holding `pcm` unchanged.
-    static func wavWrapPCM(_ pcm: Data, sampleRate: Int) -> Data {
-        let channels: UInt16 = 1
-        let bitsPerSample: UInt16 = 16
-        let byteRate: UInt32 = UInt32(sampleRate) * UInt32(channels)
-            * UInt32(bitsPerSample / 8)
-        let blockAlign: UInt16 = channels * (bitsPerSample / 8)
-        let dataSize: UInt32 = UInt32(pcm.count)
-        // RIFF chunk size is file size minus the 8 byte RIFF id + size.
-        let riffSize: UInt32 = 36 + dataSize
-
-        var out = Data()
-        out.reserveCapacity(44 + pcm.count)
-
-        func appendASCII(_ string: String) {
-            out.append(string.data(using: .ascii)!)
+    /// The voice contract sends RAW PCM, so callers pass the recorder's
+    /// output unchanged. This is only a guard for WAV bytes handed in
+    /// by mistake: when the data starts with the RIFF magic, the first
+    /// 44 bytes (the canonical header of a RIFF/WAVE PCM file) are
+    /// dropped and the PCM payload after them is returned. Otherwise
+    /// the data is returned as is. The server rejects a RIFF header
+    /// with 422, so this guard keeps a mistaken WAV from silently
+    /// failing enrollment.
+    static func rawPCMStrippingWAVHeader(_ data: Data) -> Data {
+        guard data.count > 44 else { return data }
+        // XCODE-VERIFY: the recorder (VoiceSampleRecorder) produces raw
+        // PCM16 little endian, 16 kHz, mono (2 bytes per sample,
+        // exactly 320000 bytes for the 10 s enrollment sample), never
+        // WAV bytes. This strip only fires for data starting with the
+        // "RIFF" magic of a canonical 44-byte WAV header; anything else
+        // (including non-canonical WAV with extra chunks) passes
+        // through untouched. Confirm on the Mac that the enrollment
+        // voice upload on the wire is raw PCM with no 44-byte header:
+        // a RIFF/WAVE header is a hard 422 from the server.
+        if data[0] == 0x52, data[1] == 0x49,
+           data[2] == 0x46, data[3] == 0x46 { // "RIFF"
+            return data.dropFirst(44)
         }
-        func appendUInt32LE(_ value: UInt32) {
-            var v = value.littleEndian
-            out.append(Data(bytes: &v, count: 4))
-        }
-        func appendUInt16LE(_ value: UInt16) {
-            var v = value.littleEndian
-            out.append(Data(bytes: &v, count: 2))
-        }
-
-        // RIFF chunk descriptor.
-        appendASCII("RIFF")
-        appendUInt32LE(riffSize)
-        appendASCII("WAVE")
-
-        // fmt subchunk.
-        appendASCII("fmt ")
-        appendUInt32LE(16)              // fmt chunk size for PCM
-        appendUInt16LE(1)               // audio format 1 = PCM
-        appendUInt16LE(channels)
-        appendUInt32LE(UInt32(sampleRate))
-        appendUInt32LE(byteRate)
-        appendUInt16LE(blockAlign)
-        appendUInt16LE(bitsPerSample)
-
-        // data subchunk.
-        appendASCII("data")
-        appendUInt32LE(dataSize)
-        out.append(pcm)
-
-        return out
+        return data
     }
 }

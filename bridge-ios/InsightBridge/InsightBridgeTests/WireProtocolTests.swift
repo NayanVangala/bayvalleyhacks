@@ -235,93 +235,84 @@ final class WireProtocolTests: XCTestCase {
     }
 }
 
-/// Tests for Enrollment/EnrollmentAPI.wavWrapPCM.
+/// Tests for Enrollment/EnrollmentAPI's Revision 3 JSON contract:
+/// POST /api/enroll with {name, photo_b64, voice_b64}, voice as raw
+/// PCM16 little endian 16 kHz mono (no WAV header).
 ///
 /// This class lives in WireProtocolTests.swift on purpose: the Xcode
 /// project file lists exactly three test files (WireProtocolTests,
-/// PreRollBufferTests, SessionStateTests), so the WAV tests ride along
-/// in this file instead of adding a fourth file the project does not
-/// reference.
-final class WAVWrapTests: XCTestCase {
+/// PreRollBufferTests, SessionStateTests), so the enrollment tests
+/// ride along in this file instead of adding a fourth file the
+/// project does not reference.
+final class EnrollmentWireTests: XCTestCase {
 
     // MARK: - Helpers
-
-    private func le16(_ data: Data, at offset: Int) -> UInt16 {
-        let bytes = [UInt8](data)
-        return UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
-    }
-
-    private func le32(_ data: Data, at offset: Int) -> UInt32 {
-        let bytes = [UInt8](data)
-        return UInt32(bytes[offset])
-            | (UInt32(bytes[offset + 1]) << 8)
-            | (UInt32(bytes[offset + 2]) << 16)
-            | (UInt32(bytes[offset + 3]) << 24)
-    }
-
-    private func ascii(_ data: Data, in range: Range<Int>) -> String {
-        String(decoding: data[range], as: UTF8.self)
-    }
 
     private func makePCM(byteCount: Int) -> Data {
         Data((0..<byteCount).map { UInt8($0 % 251) })
     }
 
-    // MARK: - Tests
+    /// A canonical 44 byte WAV header (RIFF/WAVE, PCM, mono, 16 bit)
+    /// for the given payload size, matching what the old Revision 2
+    /// client used to send.
+    private func wavHeader(payloadBytes: Int, sampleRate: Int = 16000) -> Data {
+        var out = Data()
+        func ascii(_ s: String) { out.append(s.data(using: .ascii)!) }
+        func u16(_ v: UInt16) {
+            var x = v.littleEndian; out.append(Data(bytes: &x, count: 2))
+        }
+        func u32(_ v: UInt32) {
+            var x = v.littleEndian; out.append(Data(bytes: &x, count: 4))
+        }
+        ascii("RIFF"); u32(UInt32(36 + payloadBytes)); ascii("WAVE")
+        ascii("fmt "); u32(16); u16(1); u16(1)
+        u32(UInt32(sampleRate)); u32(UInt32(sampleRate) * 2)
+        u16(2); u16(16)
+        ascii("data"); u32(UInt32(payloadBytes))
+        return out
+    }
 
-    func testLengthIsHeaderPlusPCM() {
-        // 3200 bytes is one 100 ms frame of PCM16 16 kHz mono.
+    // MARK: - WAV header strip
+
+    func testStrips44ByteWAVHeader() {
         let pcm = makePCM(byteCount: 3200)
-        let wav = EnrollmentAPI.wavWrapPCM(pcm, sampleRate: 16000)
-        XCTAssertEqual(wav.count, 44 + pcm.count)
+        let wav = wavHeader(payloadBytes: pcm.count) + pcm
+        let raw = EnrollmentAPI.rawPCMStrippingWAVHeader(wav)
+        XCTAssertEqual(raw, pcm)
     }
 
-    func testRIFFAndWAVEMagic() {
-        let wav = EnrollmentAPI.wavWrapPCM(makePCM(byteCount: 100), sampleRate: 16000)
-        XCTAssertEqual(ascii(wav, in: 0..<4), "RIFF")
-        XCTAssertEqual(ascii(wav, in: 8..<12), "WAVE")
-        XCTAssertEqual(ascii(wav, in: 12..<16), "fmt ")
-        XCTAssertEqual(ascii(wav, in: 36..<40), "data")
+    func testRawPCMWithoutHeaderPassesThrough() {
+        let pcm = makePCM(byteCount: 3200)
+        let raw = EnrollmentAPI.rawPCMStrippingWAVHeader(pcm)
+        XCTAssertEqual(raw, pcm)
     }
 
-    func testByteRateIsSampleRateTimesTwo() {
-        // PCM16 mono: 2 bytes per sample, one channel.
-        let wav16k = EnrollmentAPI.wavWrapPCM(makePCM(byteCount: 100), sampleRate: 16000)
-        XCTAssertEqual(le32(wav16k, at: 28), 32_000)
-        XCTAssertEqual(le32(wav16k, at: 24), 16_000)
-
-        let wav8k = EnrollmentAPI.wavWrapPCM(makePCM(byteCount: 100), sampleRate: 8000)
-        XCTAssertEqual(le32(wav8k, at: 28), 16_000)
-        XCTAssertEqual(le32(wav8k, at: 24), 8000)
+    func testShortDataPassesThrough() {
+        let tiny = makePCM(byteCount: 40)
+        XCTAssertEqual(EnrollmentAPI.rawPCMStrippingWAVHeader(tiny), tiny)
+        XCTAssertEqual(EnrollmentAPI.rawPCMStrippingWAVHeader(Data()), Data())
     }
 
-    func testDataChunkSizeMatchesPCM() {
-        let pcm = makePCM(byteCount: 1001)
-        let wav = EnrollmentAPI.wavWrapPCM(pcm, sampleRate: 16000)
-        XCTAssertEqual(le32(wav, at: 40), UInt32(pcm.count))
-        // RIFF chunk size is 36 plus the data size.
-        XCTAssertEqual(le32(wav, at: 4), UInt32(36 + pcm.count))
+    func testNonCanonicalDataPassesThrough() {
+        // Not RIFF: untouched even when longer than 44 bytes.
+        var data = makePCM(byteCount: 100)
+        data[0] = 0x00; data[1] = 0x00; data[2] = 0x00; data[3] = 0x00
+        XCTAssertEqual(EnrollmentAPI.rawPCMStrippingWAVHeader(data), data)
     }
 
-    func testCanonicalFormatFields() {
-        let wav = EnrollmentAPI.wavWrapPCM(makePCM(byteCount: 64), sampleRate: 16000)
-        XCTAssertEqual(le32(wav, at: 16), 16)   // fmt chunk size
-        XCTAssertEqual(le16(wav, at: 20), 1)    // audio format: PCM
-        XCTAssertEqual(le16(wav, at: 22), 1)    // channels: mono
-        XCTAssertEqual(le16(wav, at: 32), 2)    // block align: 2 bytes
-        XCTAssertEqual(le16(wav, at: 34), 16)   // bits per sample
-    }
+    // MARK: - Endpoint
 
-    func testPayloadIsOriginalPCM() {
-        let pcm = makePCM(byteCount: 500)
-        let wav = EnrollmentAPI.wavWrapPCM(pcm, sampleRate: 16000)
-        XCTAssertEqual(Data(wav.suffix(pcm.count)), pcm)
-    }
-
-    func testEmptyPCMProducesBareHeader() {
-        let wav = EnrollmentAPI.wavWrapPCM(Data(), sampleRate: 16000)
-        XCTAssertEqual(wav.count, 44)
-        XCTAssertEqual(le32(wav, at: 40), 0)
-        XCTAssertEqual(ascii(wav, in: 0..<4), "RIFF")
+    func testEnrollmentEndpointIsAPIPEnroll() {
+        // XCODE-VERIFY: this asserts the new JSON contract path. If the
+        // server moves enrollment, update Config.enrollmentURL and this
+        // test together.
+        XCTAssertEqual(Config.enrollmentURL.path, "/api/enroll")
+        let api = EnrollmentAPI(
+            baseURL: URL(string: "http://192.168.2.1:8000")!)
+        XCTAssertEqual(api.enrollmentEndpoint.path, "/api/enroll")
+        let custom = EnrollmentAPI(
+            baseURL: URL(string: "http://10.0.0.5:9000")!)
+        XCTAssertEqual(custom.enrollmentEndpoint.absoluteString,
+                       "http://10.0.0.5:9000/api/enroll")
     }
 }
