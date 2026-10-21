@@ -24,6 +24,9 @@ Key facts:
 - [ ] Agree friend unpairs from their phone at handover
   - [ ] Unpair in Meta AI app
   - [ ] Forget in Bluetooth settings
+  - [ ] Force-quit the Meta AI app before every bridge run (issue #240: the
+    Meta AI app and the bridge fight over the same L2CAP channel, PSM 129,
+    and the flapping kills the camera stream)
 
 ## 2. EARLY DE-RISK (do on Nayan's own phone BEFORE pickup day)
 
