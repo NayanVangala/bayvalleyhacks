@@ -14,6 +14,9 @@ HTTP surface:
 - GET  /api/sessions/{id}          (session + segments, raw_text stripped)
 - GET  /api/people
 - POST /api/enroll                 {name, photo_b64, voice_b64, notes?}
+                                 photo_b64 = base64 JPEG; voice_b64 = base64
+                                 raw PCM16 mono 16kHz little endian (NO WAV header)
+                                 (alias: POST /api/people/enroll, same contract)
 - POST /api/search                 {query, person?, limit?}
 - POST /api/segments/{id}/correct  {person_id, operator_id?}
 - POST /api/sessions/{id}/digest   {recap_text?, confirm?}
@@ -201,6 +204,13 @@ MAX_AUDIO_FRAME_BYTES = 1 * 1024 * 1024
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
 MAX_ENROLL_PHOTO_BYTES = 10 * 1024 * 1024
 MAX_ENROLL_VOICE_BYTES = 16 * 1024 * 1024
+# Enrollment voice sample format: raw PCM16 mono at 16 kHz, little
+# endian, NO WAV header (the Swift capture path sends int16 samples
+# straight from the audio buffer). A voice print needs at least one
+# second of audio to embed; enrollment samples are ~10 seconds.
+ENROLL_VOICE_BYTES_PER_SECOND = 16000 * 2
+MIN_ENROLL_VOICE_BYTES = ENROLL_VOICE_BYTES_PER_SECOND
+WAV_MAGIC = b"RIFF"
 JPEG_MAGIC = b"\xff\xd8\xff"
 # Bridge binary header magic ("OR", see bridge-ios PROTOCOL.md).
 BRIDGE_MAGIC = b"OR"
@@ -1266,11 +1276,26 @@ def create_app(
         return _do_enroll(body)
 
     def _do_enroll(body: dict) -> dict:
+        """Validate the enrollment wire contract and enroll one person.
+
+        Wire format (the Swift bridge codes against this):
+            {"name": str, "photo_b64": str, "voice_b64": str, "notes"?: str}
+        photo_b64 is base64 of a JPEG photo; voice_b64 is base64 of raw
+        PCM16 mono 16 kHz little endian audio with NO WAV header.
+        Every violation below is a 422, except oversized payloads which
+        are 413, so the phone can tell "fix your payload" apart from
+        "something broke server side".
+        """
         name = body.get("name")
         photo_b64 = _first_present(body, "photo_b64", "photo", "photo_base64")
         voice_b64 = _first_present(body, "voice_b64", "voice", "voice_base64", "voice_pcm_b64")
         notes = body.get("notes") or ""
-        if not name or photo_b64 is None or voice_b64 is None:
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="enroll requires a non-blank string name",
+            )
+        if photo_b64 is None or voice_b64 is None:
             raise HTTPException(
                 status_code=422,
                 detail="enroll requires name, photo_b64 and voice_b64",
@@ -1289,6 +1314,32 @@ def create_app(
             raise HTTPException(status_code=413, detail="enrollment photo too large")
         if len(voice_pcm) > MAX_ENROLL_VOICE_BYTES:
             raise HTTPException(status_code=413, detail="enrollment voice sample too large")
+        if not photo_bytes.startswith(JPEG_MAGIC):
+            # Covers both the empty photo and a non-JPEG payload: the
+            # face embedder needs a decodable image, so reject early
+            # with a clear message instead of a downstream 422.
+            raise HTTPException(
+                status_code=422,
+                detail="photo_b64 must be base64 of a JPEG image",
+            )
+        if voice_pcm.startswith(WAV_MAGIC):
+            raise HTTPException(
+                status_code=422,
+                detail="voice_b64 must be raw PCM, not a WAV file: strip the WAV header",
+            )
+        if (
+            not voice_pcm
+            or len(voice_pcm) % 2 != 0
+            or len(voice_pcm) < MIN_ENROLL_VOICE_BYTES
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "voice_b64 must be base64 of raw PCM16 mono 16kHz "
+                    "little endian audio, at least %d bytes (%d second)"
+                    % (MIN_ENROLL_VOICE_BYTES, MIN_ENROLL_VOICE_BYTES // ENROLL_VOICE_BYTES_PER_SECOND)
+                ),
+            )
         if enrollment_service is None:
             raise HTTPException(status_code=503, detail="enrollment service is unavailable")
         enroll = getattr(enrollment_service, "enroll_person", None)

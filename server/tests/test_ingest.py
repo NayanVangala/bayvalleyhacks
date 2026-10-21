@@ -38,7 +38,7 @@ from onrecord.voice import FakeVoiceEmbedder  # noqa: E402
 SAMPLE_RATE = 16000
 # 1 second of PCM16 silence: 16000 samples, 2 bytes each.
 ONE_SECOND_PCM = b"\x00\x00" * SAMPLE_RATE
-PHOTO_BYTES = b"fake-photo-bytes-for-enrollment"
+PHOTO_BYTES = b"\xff\xd8\xff" + b"fake-photo-bytes-for-enrollment"
 
 
 # ---------------------------------------------------------------------------
