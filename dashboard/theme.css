@@ -1,0 +1,336 @@
+/* ============================================================
+   OnRecord Dashboard Theme Foundation (Web)
+   Theme-only translation of design-system-part1.md.
+   Plain CSS. No framework dependency. Tailwind v4 safe.
+
+   Adoption: add `@import "./theme.css";` to app/globals.css
+   (after the tailwind import). Nothing restyles until you
+   apply .onr-* classes or the .onr-dark chapter scope.
+
+   Naming: every variable keeps the iOS design-system name,
+   lowercased with an --onr- prefix. Hexes are identical.
+   ============================================================ */
+
+:root {
+  /* ---- Field colors: the 70 to 85 percent. One per view. ---- */
+  --onr-olive-night: #22251c;    /* the capture field */
+  --onr-deep-plum: #2a1428;      /* the people field */
+  --onr-warm-paper: #f4f2ed;     /* the day field (never sterile white) */
+  --onr-espresso-night: #201616; /* the recall field */
+
+  /* ---- Loud accents: 5 to 10 percent, rationed. ---- */
+  --onr-acid-lime: #bcf015;      /* action and proof. Never decoration. */
+  --onr-hot-magenta: #e835c1;    /* stranger and heat */
+  --onr-tangerine: #ff7a1a;      /* attention */
+  --onr-acid-teal: #3dd6c3;      /* supporting cool, stays quiet */
+
+  /* ---- Warm neutrals: text and metadata ---- */
+  --onr-bone: #f6f1e7;           /* primary type on dark fields */
+  --onr-ink: #1e1e1e;            /* primary type on warm paper */
+  --onr-warm-gray: #8a8378;      /* secondary type on dark fields */
+  --onr-warm-gray-deep: #6b6459; /* secondary type on warm paper */
+  --onr-smoked-plum: #45304b;    /* raised card surface on deep plum */
+  --onr-raised-olive: #30341f;   /* raised card surface on olive night */
+  --onr-paper-shadow: #e9e4d8;   /* inset surface on warm paper */
+
+  /* ---- The blue rule: under 3 percent, Ask input focus only ---- */
+  --onr-focus-indigo: #4b4bd8;
+
+  /* ---- Type stacks ----
+     OnRecordDisplay is a placeholder token. When the bundled
+     display face is chosen (condensed grotesk or editorial
+     serif), register it under that family name and it takes
+     over. Until then the system fallbacks below apply. */
+  --onr-font-display: "OnRecordDisplay", "Arial Narrow",
+    "HelveticaNeue-CondensedBold", -apple-system, "SF Pro",
+    "New York", "Segoe UI", Roboto, sans-serif;
+  --onr-font-body: -apple-system, "SF Pro", "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --onr-font-mono: ui-monospace, "SF Mono", "Cascadia Mono",
+    "Cascadia Code", Menlo, Consolas, monospace;
+
+  /* ---- Type scale: iOS points map 1:1 to px on web ---- */
+  --onr-display-size: clamp(2.75rem, 6vw, 4rem); /* 44 to 64 */
+  --onr-headline-size: clamp(1.75rem, 3.4vw, 2.125rem); /* 28 to 34 */
+  --onr-title-size: 1.3125rem;   /* 21 */
+  --onr-body-size: 1rem;         /* 16 */
+  --onr-caption-size: 0.8125rem; /* 13 */
+  --onr-micro-size: 0.6875rem;   /* 11 */
+
+  /* ---- Motion: the signature ease and durations ---- */
+  --onr-ease: cubic-bezier(0.625, 0.05, 0, 1);
+  --onr-duration-fast: 120ms;
+  --onr-duration-base: 240ms;
+  --onr-duration-slow: 480ms;
+  --onr-duration-sweep: 600ms; /* marker sweep, pending Part 2 choreography */
+
+  /* ---- Shared construction ---- */
+  --onr-sticker-outline: 2px solid var(--onr-ink);
+  --onr-scrim: rgba(32, 22, 22, 0.4); /* 40 percent espresso scrim over art */
+}
+
+/* ============================================================
+   Field chapters: full-bleed backgrounds + type pairing.
+   One field per view. Two loud fields never share one screen.
+   ============================================================ */
+.onr-field-olive { background: var(--onr-olive-night); color: var(--onr-bone); }
+.onr-field-plum { background: var(--onr-deep-plum); color: var(--onr-bone); }
+.onr-field-paper { background: var(--onr-warm-paper); color: var(--onr-ink); }
+.onr-field-espresso { background: var(--onr-espresso-night); color: var(--onr-bone); }
+
+/* Dark-field defaults. Apply .onr-dark to <body> or a chapter
+   wrapper to opt the dashboard into the capture chapter. */
+.onr-dark {
+  background: var(--onr-olive-night);
+  color: var(--onr-bone);
+}
+
+/* ============================================================
+   Type utilities: loud display, quiet body.
+   ============================================================ */
+.onr-display {
+  font-family: var(--onr-font-display);
+  font-size: var(--onr-display-size);
+  font-weight: 900;
+  line-height: 0.95;
+  letter-spacing: -0.01em;
+  text-transform: uppercase;
+}
+.onr-headline {
+  font-family: var(--onr-font-display);
+  font-size: var(--onr-headline-size);
+  font-weight: 800;
+  line-height: 1;
+}
+.onr-title {
+  font-family: var(--onr-font-body);
+  font-size: var(--onr-title-size);
+  font-weight: 600;
+  line-height: 1.1;
+}
+.onr-body {
+  font-family: var(--onr-font-body);
+  font-size: var(--onr-body-size);
+  font-weight: 400;
+  line-height: 1.35;
+}
+.onr-caption {
+  font-family: var(--onr-font-body);
+  font-size: var(--onr-caption-size);
+  line-height: 1.3;
+}
+
+/* The label voice: bracketed, uppercase, tracked mono.
+   Copy must include the brackets: [MAYA · VERIFIED VERBATIM] */
+.onr-micro {
+  font-family: var(--onr-font-mono);
+  font-size: var(--onr-micro-size);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  line-height: 1;
+  color: var(--onr-warm-gray);
+}
+.onr-field-paper .onr-micro,
+.onr-micro.on-paper { color: var(--onr-warm-gray-deep); }
+
+/* The quote hero: the product signature. Verbatim quotes only,
+   clean grotesk, never the display face. 2 to 3x body size. */
+.onr-quote-hero {
+  font-family: var(--onr-font-body);
+  font-size: clamp(1.75rem, 4vw, 2.5rem); /* 28 to 40 */
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.005em;
+}
+
+/* ============================================================
+   Accent utilities: rationed, never decoration.
+   ============================================================ */
+.onr-text-lime { color: var(--onr-acid-lime); }
+.onr-text-magenta { color: var(--onr-hot-magenta); }
+.onr-text-tangerine { color: var(--onr-tangerine); }
+.onr-text-teal { color: var(--onr-acid-teal); }
+.onr-text-bone { color: var(--onr-bone); }
+.onr-text-ink { color: var(--onr-ink); }
+.onr-text-muted { color: var(--onr-warm-gray); }
+
+.onr-bg-lime { background: var(--onr-acid-lime); }
+.onr-bg-magenta { background: var(--onr-hot-magenta); }
+.onr-bg-tangerine { background: var(--onr-tangerine); }
+.onr-bg-teal { background: var(--onr-acid-teal); }
+
+/* Raised card surfaces, one per field */
+.onr-card {
+  border: var(--onr-sticker-outline);
+}
+.onr-field-olive .onr-card { background: var(--onr-raised-olive); }
+.onr-field-plum .onr-card { background: var(--onr-smoked-plum); }
+.onr-field-paper .onr-card { background: var(--onr-warm-paper); }
+.onr-card-well {
+  background: var(--onr-paper-shadow);
+  border: var(--onr-sticker-outline);
+}
+
+/* ============================================================
+   QuoteCard: status pill pinned to top edge, big quote,
+   lime marker sweep behind the key phrase, mono receipt below.
+   Heat never exceeds one sticker per card.
+   ============================================================ */
+.onr-quote-card {
+  position: relative;
+  padding: 1.5rem;
+}
+.onr-quote-card .onr-receipt {
+  margin-top: 1rem;
+}
+
+/* Marker sweep: a lime bar scaling in behind the exact words,
+   like someone marked it live as the quote arrives. */
+.onr-sweep {
+  position: relative;
+  display: inline;
+  padding: 0 0.15em;
+  z-index: 0;
+}
+.onr-sweep::before {
+  content: "";
+  position: absolute;
+  inset: 0.05em -0.05em;
+  background: var(--onr-acid-lime);
+  z-index: -1;
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: onr-sweep-in var(--onr-duration-sweep) var(--onr-ease) forwards;
+}
+@keyframes onr-sweep-in {
+  to { transform: scaleX(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .onr-sweep::before { animation: none; transform: scaleX(1); }
+}
+
+/* ============================================================
+   StatusChip: the verdict sticker. Lime VERIFIED, tangerine
+   REVIEW, teal SILENCE, magenta UNKNOWN. Pills are stickers,
+   not mono labels: the mono receipt sits beneath them.
+   ============================================================ */
+.onr-status-pill {
+  display: inline-block;
+  border: var(--onr-sticker-outline);
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  font-family: var(--onr-font-body);
+  font-size: var(--onr-caption-size);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transform: rotate(-1.5deg);
+  box-shadow: 2px 2px 0 var(--onr-ink);
+}
+.onr-status-pill.is-verified { background: var(--onr-acid-lime); color: var(--onr-ink); }
+.onr-status-pill.is-review { background: var(--onr-tangerine); color: var(--onr-ink); }
+.onr-status-pill.is-silence { background: var(--onr-acid-teal); color: var(--onr-ink); }
+.onr-status-pill.is-unknown { background: var(--onr-hot-magenta); color: var(--onr-bone); }
+
+/* ============================================================
+   SpeakerSticker: name in the display face on a loud fill,
+   dark outline, hard offset shadow, slight tilt, pasted
+   overlapping the photo corner. Magenta for unknown,
+   tangerine for heat, lime for verified-enrolled.
+   ============================================================ */
+.onr-speaker-sticker {
+  display: inline-block;
+  font-family: var(--onr-font-display);
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 0.25rem 0.8rem;
+  border: var(--onr-sticker-outline);
+  box-shadow: 3px 3px 0 var(--onr-ink);
+  transform: rotate(-3deg);
+}
+.onr-speaker-sticker.is-unknown { background: var(--onr-hot-magenta); color: var(--onr-bone); }
+.onr-speaker-sticker.is-heat { background: var(--onr-tangerine); color: var(--onr-ink); }
+.onr-speaker-sticker.is-verified { background: var(--onr-acid-lime); color: var(--onr-ink); }
+
+/* ============================================================
+   Record button: lime, ink type knocked out, the action color.
+   ============================================================ */
+.onr-record-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--onr-acid-lime);
+  color: var(--onr-ink);
+  border: var(--onr-sticker-outline);
+  border-radius: 999px;
+  padding: 0.75rem 1.5rem;
+  font-family: var(--onr-font-body);
+  font-weight: 700;
+  font-size: var(--onr-body-size);
+  cursor: pointer;
+  transition: transform var(--onr-duration-fast) var(--onr-ease);
+}
+.onr-record-button:active { transform: scale(0.92); }
+
+/* ============================================================
+   Marquee ticker: lime strip, mono caps, star separators,
+   constant speed. Duplicate the track content in markup for
+   a seamless loop.
+   ============================================================ */
+.onr-ticker {
+  overflow: hidden;
+  background: var(--onr-acid-lime);
+  border-top: var(--onr-sticker-outline);
+  border-bottom: var(--onr-sticker-outline);
+  white-space: nowrap;
+}
+.onr-ticker-track {
+  display: inline-flex;
+  gap: 2rem;
+  padding: 0.5rem 1rem;
+  font-family: var(--onr-font-mono);
+  font-size: var(--onr-caption-size);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--onr-ink);
+  animation: onr-ticker-scroll 30s linear infinite;
+}
+@keyframes onr-ticker-scroll {
+  to { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .onr-ticker-track { animation: none; }
+}
+
+/* ============================================================
+   Imagery: rectangular crops, hard edges, thin gutters.
+   Tiles get one consistent 12px radius with a 2px dark
+   outline so art reads as a sticker, not a photo.
+   ============================================================ */
+.onr-photo {
+  display: block;
+  width: 100%;
+  object-fit: cover;
+  border: var(--onr-sticker-outline);
+}
+.onr-tile {
+  border: var(--onr-sticker-outline);
+  border-radius: 12px;
+  object-fit: cover;
+}
+.onr-scrim {
+  background: linear-gradient(to top, var(--onr-scrim), transparent 60%);
+}
+
+/* Focus: indigo only inside the Ask chapter. Everywhere else
+   the focus ring is lime, per the blue rule. */
+:focus-visible {
+  outline: 2px solid var(--onr-acid-lime);
+  outline-offset: 2px;
+}
+.onr-ask :focus-visible {
+  outline-color: var(--onr-focus-indigo);
+}
