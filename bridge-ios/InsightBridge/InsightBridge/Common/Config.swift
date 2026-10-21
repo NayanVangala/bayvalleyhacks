@@ -74,8 +74,20 @@ enum Config {
     /// a real first arm takes ~14s end to end (waitingForDevice, then
     /// streaming), so the old noFrameTimeoutSeconds + 2 budget always
     /// failed over to phone before the camera transport ever came up.
-    /// See docs/DAT-WIFI-ENTITLEMENTS.md.
+    /// Extentos rides the same DAT stack underneath, so the 40s budget
+    /// stays unchanged. See docs/DAT-WIFI-ENTITLEMENTS.md.
     static let initialAttachTimeoutSeconds: TimeInterval = 40.0
+
+    // MARK: - Extentos
+
+    /// Seconds budget for the Extentos connection call during registration
+    /// (glasses.connection.connect()). Aligned with
+    /// initialAttachTimeoutSeconds: Extentos bundles the DAT 0.8.0 stack
+    /// underneath, so first-time link establishment still needs the SoftAP
+    /// join window. Used by ExtentosRegistration; the attach flow keeps
+    /// using initialAttachTimeoutSeconds for the first-frame wait.
+    /// VERIFY-ON-MAC: cross-check against ExtentosRegistration.swift.
+    static let extentosConnectTimeoutSeconds: TimeInterval = 40.0
 
     /// Window in which jitter strikes are counted.
     static let jitterStrikeWindowSeconds: TimeInterval = 30

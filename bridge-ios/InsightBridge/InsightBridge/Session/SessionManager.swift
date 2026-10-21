@@ -20,9 +20,18 @@
 //    4. No modal dialogs anywhere in the failover path. The only user visible
 //       signals are the persistent StatusBanner plus one haptic.
 //
-//  SDK rule: this file imports NO Meta SDK. It only sees the CaptureSource
-//  protocol. The SDK lives in Sources/GlassesSource.swift and
-//  Sources/DATRegistration.swift and nowhere else.
+//  SDK rule: this file imports NO glasses SDK. It only sees the
+//  CaptureSource protocol. The SDK lives in
+//  Sources/ExtentosGlassesSource.swift and
+//  Sources/ExtentosRegistration.swift and nowhere else.
+//  Extentos semantics (see extentos-research/architecture-plan.md, chunk C):
+//  ExtentosRegistration owns the ONE `any ExtentosGlasses` instance for the
+//  app lifetime; ExtentosGlassesSource injects it. `connect()` is NOT
+//  idempotent, so source.start() must trigger exactly one connect per attach
+//  (guarded below by isAttachingGlasses); every retry path must funnel
+//  through the serialized `reconnect()` instead of a second connect().
+//  VERIFY-ON-MAC: cross-check against ExtentosGlassesSource.swift and
+//  ExtentosRegistration.swift once those files land on this branch.
 //
 //  Wire notes (protocol v1, Net/WireProtocol.swift and Net/WSClient.swift):
 //    - WSClient sends the hello message itself on every connect and
@@ -594,6 +603,12 @@ final class SessionManager: ObservableObject {
         banner = .reconnecting
 
         let source = glassesLikeSource
+        // Extentos semantics: source.start() on ExtentosGlassesSource
+        // triggers exactly one `connect()` on the shared any ExtentosGlasses
+        // instance (connect is NOT idempotent; the isAttachingGlasses guard
+        // above is what keeps it once). Retries must NOT re-run start()/connect();
+        // they funnel through the serialized `reconnect()` on the source.
+        // VERIFY-ON-MAC: cross-check against ExtentosGlassesSource.swift.
         do {
             try await source.start()
         } catch {
@@ -614,11 +629,12 @@ final class SessionManager: ObservableObject {
         // streams itself.
         startGlassesRoutingTasks()
         startGlassesHealthTask()
-        // Wait for DAT's own link establishment, not our watchdog budget.
-        // The camera transport needs the iOS Wi-Fi join to the glasses'
-        // SoftAP first (~14s on real hardware, DAT times out at ~30s), so
-        // a short timeout here would fail over to phone before the first
-        // frame could ever arrive. See docs/DAT-WIFI-ENTITLEMENTS.md.
+        // Wait for Extentos's own link establishment, not our watchdog
+        // budget. Extentos bundles the DAT stack underneath, so the camera
+        // transport still needs the iOS Wi-Fi join to the glasses' SoftAP
+        // first (~14s on real hardware, DAT times out at ~30s); a short
+        // timeout here would fail over to phone before the first frame
+        // could ever arrive. See docs/DAT-WIFI-ENTITLEMENTS.md.
         let healthy = await waitForFirstHealthyGlassesFrame(timeout: Config.initialAttachTimeoutSeconds)
 
         guard healthy else {
@@ -640,6 +656,10 @@ final class SessionManager: ObservableObject {
         mode = .glasses
         activeOrigin = source.origin
         banner = .glassesLive
+        // VERIFY-ON-MAC: set ws.glassesModel from the Extentos device type
+        // (glasses.device.type: RAYBAN_META, RAYBAN_DISPLAY, OAKLEY_META_HSTN,
+        // ...) once the source exposes it; keep the "Ray-Ban Meta Display"
+        // default until that mapping is verified against ExtentosGlassesSource.swift.
         UINotificationFeedbackGenerator().notificationOccurred(.success)
 
         // A successful attach resets the anti-flap counters.
@@ -805,6 +825,13 @@ final class SessionManager: ObservableObject {
             // Never resurrect glasses for a session the user already ended.
             guard self.machine.state != .ended else { return }
             self.autoReattachAttempts += 1
+            // Extentos semantics: this auto retry re-enters attachGlasses
+            // under the isAttachingGlasses guard, so it is serialized. The
+            // source implementation must route a re-attach after a first
+            // successful connect() through `reconnect()` (serialized by the
+            // SDK) rather than calling connect() a second time, because
+            // connect() is NOT idempotent.
+            // VERIFY-ON-MAC: cross-check against ExtentosGlassesSource.swift.
             await self.attachGlasses(isAutoAttempt: true, bypassCooldown: true)
             if !self.isGlassesAttached && !self.isLatchedToPhone {
                 // That attempt failed. Schedule the next one the same way,
