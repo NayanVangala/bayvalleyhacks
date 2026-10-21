@@ -331,6 +331,15 @@ final class SessionManager: ObservableObject {
             }
         }
 
+        // Server rejected the session (e.g. 4404): surface it in the
+        // banner and stop; WSClient already refuses to reconnect-spin.
+        // XCODE-VERIFY: banner shows on 4404 simulation against the dev server.
+        ws.onSessionError = { [weak self] code, message in
+            Task { @MainActor in
+                self?.banner = StatusBanner(kind: .sessionError, text: "Session error (\(code)): \(message)")
+            }
+        }
+
         // The hello the client will send names this origin. Until glasses
         // are attached and live, the phone is the source of record.
         ws.audioSource = CaptureOrigin.phone.rawValue
