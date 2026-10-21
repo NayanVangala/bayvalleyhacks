@@ -10,10 +10,10 @@ import Foundation
 final class AppCoordinator: ObservableObject {
 
     private let sessionManager: SessionManager
-    private let registration: DATRegistration
+    private let registration: ExtentosRegistration
     private var hasStarted = false
 
-    init(sessionManager: SessionManager, registration: DATRegistration) {
+    init(sessionManager: SessionManager, registration: ExtentosRegistration) {
         self.sessionManager = sessionManager
         self.registration = registration
     }

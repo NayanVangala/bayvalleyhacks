@@ -19,8 +19,8 @@
 		B1000000000000000000002D /* CaptureSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000002C /* CaptureSource.swift */; };
 		B1000000000000000000002F /* SessionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000002E /* SessionState.swift */; };
 		B10000000000000000000031 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000030 /* Config.swift */; };
-		B10000000000000000000033 /* GlassesSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000032 /* GlassesSource.swift */; };
-		B10000000000000000000035 /* DATRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000034 /* DATRegistration.swift */; };
+		B10000000000000000000033 /* ExtentosGlassesSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000032 /* ExtentosGlassesSource.swift */; };
+		B10000000000000000000035 /* ExtentosRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000034 /* ExtentosRegistration.swift */; };
 		B10000000000000000000037 /* PhoneSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000036 /* PhoneSource.swift */; };
 		B10000000000000000000039 /* MockSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000038 /* MockSource.swift */; };
 		B1000000000000000000003B /* SessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000003A /* SessionManager.swift */; };
@@ -68,8 +68,8 @@
 		A1000000000000000000002C /* CaptureSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSource.swift; sourceTree = "<group>"; };
 		A1000000000000000000002E /* SessionState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionState.swift; sourceTree = "<group>"; };
 		A10000000000000000000030 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
-		A10000000000000000000032 /* GlassesSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassesSource.swift; sourceTree = "<group>"; };
-		A10000000000000000000034 /* DATRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DATRegistration.swift; sourceTree = "<group>"; };
+		A10000000000000000000032 /* ExtentosGlassesSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtentosGlassesSource.swift; sourceTree = "<group>"; };
+		A10000000000000000000034 /* ExtentosRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtentosRegistration.swift; sourceTree = "<group>"; };
 		A10000000000000000000036 /* PhoneSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSource.swift; sourceTree = "<group>"; };
 		A10000000000000000000038 /* MockSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockSource.swift; sourceTree = "<group>"; };
 		A1000000000000000000003A /* SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManager.swift; sourceTree = "<group>"; };
@@ -176,8 +176,8 @@
 		AA0000000000000000000021 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				A10000000000000000000032 /* GlassesSource.swift */,
-				A10000000000000000000034 /* DATRegistration.swift */,
+				A10000000000000000000032 /* ExtentosGlassesSource.swift */,
+				A10000000000000000000034 /* ExtentosRegistration.swift */,
 				A10000000000000000000036 /* PhoneSource.swift */,
 				A10000000000000000000038 /* MockSource.swift */,
 			);
@@ -352,8 +352,8 @@
 				B1000000000000000000002D /* CaptureSource.swift in Sources */,
 				B1000000000000000000002F /* SessionState.swift in Sources */,
 				B10000000000000000000031 /* Config.swift in Sources */,
-				B10000000000000000000033 /* GlassesSource.swift in Sources */,
-				B10000000000000000000035 /* DATRegistration.swift in Sources */,
+				B10000000000000000000033 /* ExtentosGlassesSource.swift in Sources */,
+				B10000000000000000000035 /* ExtentosRegistration.swift in Sources */,
 				B10000000000000000000037 /* PhoneSource.swift in Sources */,
 				B10000000000000000000039 /* MockSource.swift in Sources */,
 				B1000000000000000000003B /* SessionManager.swift in Sources */,

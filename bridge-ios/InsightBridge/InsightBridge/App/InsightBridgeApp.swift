@@ -4,12 +4,12 @@ import SwiftUI
 // Entry point for the OnRecord bridge app.
 // Builds the full object graph once and injects it via environment.
 // No Meta SDK imports in this file. SDK access stays behind
-// DATRegistration and GlassesSource.
+// ExtentosRegistration and ExtentosGlassesSource.
 
 @main
 struct InsightBridgeApp: App {
 
-    @StateObject private var registration: DATRegistration
+    @StateObject private var registration: ExtentosRegistration
     @StateObject private var sessionManager: SessionManager
     @StateObject private var coordinator: AppCoordinator
 
@@ -29,9 +29,13 @@ struct InsightBridgeApp: App {
         let port = storedPort > 0 ? storedPort : Config.serverPort
         let useMockSource = defaults.bool(forKey: "onrecord.useMockSource")
 
-        let registration = DATRegistration()
+        let registration = ExtentosRegistration()
+        // Configure now (idempotent): Extentos.create builds the shared
+        // glasses instance the source needs at construction time.
+        // AppCoordinator.start() calls configure() again harmlessly.
+        registration.configure()
 
-        let glassesSource = GlassesSource()
+        let glassesSource = ExtentosGlassesSource(glasses: registration.glasses)
         let phoneSource = PhoneSource()
         // Mock source is only created for drills when the toggle is on.
         // When the toggle is off this stays nil and no mock is wired in.
@@ -68,7 +72,9 @@ struct InsightBridgeApp: App {
                     coordinator.start()
                 }
                 .onOpenURL { url in
-                    _ = registration.handleOpenURL(url)
+                    Task {
+                        _ = await registration.handleOpenURL(url)
+                    }
                 }
         }
     }

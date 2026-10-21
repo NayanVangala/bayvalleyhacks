@@ -572,7 +572,7 @@ final class MockSource: CaptureSource {
             // terminal. A plain stop must stay restartable:
             // SessionManager holds one MockSource for the whole app
             // lifetime and reattaches it after failover drills, the
-            // same lifecycle GlassesSource follows.
+            // same lifecycle ExtentosGlassesSource follows.
             stateLock.unlock()
             return
         }

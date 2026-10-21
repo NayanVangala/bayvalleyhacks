@@ -2,12 +2,12 @@ import SwiftUI
 
 // PairingView
 // Instructional pairing flow for the glasses.
-// Registration calls go through DATRegistration only.
+// Registration calls go through ExtentosRegistration only.
 // No Meta SDK imports in this view.
 
 struct PairingView: View {
 
-    @EnvironmentObject private var registration: DATRegistration
+    @EnvironmentObject private var registration: ExtentosRegistration
     @EnvironmentObject private var sessionManager: SessionManager
 
     @State private var isDiscovering = false

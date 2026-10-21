@@ -596,7 +596,7 @@ final class PhoneSource: NSObject, CaptureSource {
         }
 
         // The stream continuations are deliberately NOT finished here,
-        // the same rule GlassesSource follows: SessionManager owns one
+        // the same rule ExtentosGlassesSource follows: SessionManager owns one
         // PhoneSource for the whole app lifetime and starts it again
         // for the next session and after failover cycles. Finishing
         // the streams in stop() made every second session in one app

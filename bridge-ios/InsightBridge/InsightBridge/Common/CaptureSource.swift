@@ -12,7 +12,7 @@
 // capture layer reads badges, codes, or identity labels.
 //
 // SDK import rule:
-// Zero SDK imports are allowed outside Sources/GlassesSource.swift
+// Zero SDK imports are allowed outside Sources/ExtentosGlassesSource.swift
 // and Sources/DATRegistration.swift. This file must stay SDK free.
 
 import Foundation
