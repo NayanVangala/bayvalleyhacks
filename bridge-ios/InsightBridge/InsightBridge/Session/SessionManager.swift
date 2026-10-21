@@ -614,7 +614,12 @@ final class SessionManager: ObservableObject {
         // streams itself.
         startGlassesRoutingTasks()
         startGlassesHealthTask()
-        let healthy = await waitForFirstHealthyGlassesFrame(timeout: Config.noFrameTimeoutSeconds + 2.0)
+        // Wait for DAT's own link establishment, not our watchdog budget.
+        // The camera transport needs the iOS Wi-Fi join to the glasses'
+        // SoftAP first (~14s on real hardware, DAT times out at ~30s), so
+        // a short timeout here would fail over to phone before the first
+        // frame could ever arrive. See docs/DAT-WIFI-ENTITLEMENTS.md.
+        let healthy = await waitForFirstHealthyGlassesFrame(timeout: Config.initialAttachTimeoutSeconds)
 
         guard healthy else {
             // Started but silent: treat as unavailable, tear down best

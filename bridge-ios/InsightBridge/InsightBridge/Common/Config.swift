@@ -69,6 +69,14 @@ enum Config {
     /// glasses source as dead.
     static let noFrameTimeoutSeconds: TimeInterval = 3.0
 
+    /// Seconds to wait for the FIRST glasses video frame during attach.
+    /// This must clear DAT's own ~30s SoftAP link-establishment timeout:
+    /// a real first arm takes ~14s end to end (waitingForDevice, then
+    /// streaming), so the old noFrameTimeoutSeconds + 2 budget always
+    /// failed over to phone before the camera transport ever came up.
+    /// See docs/DAT-WIFI-ENTITLEMENTS.md.
+    static let initialAttachTimeoutSeconds: TimeInterval = 40.0
+
     /// Window in which jitter strikes are counted.
     static let jitterStrikeWindowSeconds: TimeInterval = 30
 

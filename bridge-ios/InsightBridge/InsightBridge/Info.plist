@@ -76,6 +76,13 @@
 	<string>InsightBridge uses the camera as a backup photo source when glasses photos are unavailable, and only during a session you start.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>InsightBridge connects to the OnRecord server running on your laptop on your local network to send session audio and photos.</string>
+	<!-- Fill in the DAT SDK's Bonjour service types on the Mac from the
+	     toolkit docs (e.g. the camera transport's _tcp service). The key must
+	     exist for the socket layer past the Wi-Fi join; see
+	     docs/DAT-WIFI-ENTITLEMENTS.md. -->
+	<key>NSBonjourServices</key>
+	<array>
+	</array>
 	<key>OnRecordServerHost</key>
 	<string>$(SERVER_HOST)</string>
 	<key>OnRecordServerPort</key>

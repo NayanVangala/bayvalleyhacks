@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- DAT camera frames ride the glasses' own Wi-Fi SoftAP, not BLE.
+	     Without these, iOS never joins the glasses network, the camera
+	     transport sits in waitingForDevice, and DAT's ~30s link timeout
+	     fires with a misleading deviceNotConnected. See
+	     docs/DAT-WIFI-ENTITLEMENTS.md. Entitlements are granted to the
+	     APP, never to a framework, so the SDK cannot supply these. -->
+	<key>com.apple.developer.networking.wifi-info</key>
+	<true/>
+	<key>com.apple.developer.networking.HotspotConfiguration</key>
+	<true/>
+</dict>
+</plist>
