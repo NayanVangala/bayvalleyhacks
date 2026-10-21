@@ -9,12 +9,21 @@
 //  to disk via OfflineStaging and replayed in order on reconnect.
 //
 //  Behavior summary:
-//  - connect sends hello (with resume_session_id on reconnects), then
-//    replays staged items in original order before new live sends.
+//  - connect sends hello with the PHONE-GENERATED session_id in both the
+//    query string and the hello body; the server auto-registers the session
+//    on hello, and the server's welcome frame is the session confirmation.
+//    Reconnect hello resumes the same session id.
+//  - Replay order on reconnect: hello, staged items oldest first, then live.
 //  - Ping every 15 s. If no pong arrives for over 30 s, the connection
 //    is treated as dropped and the reconnect loop takes over.
-//  - Reconnect backoff: 1, 2, 4, 8, 16, 30 s cap, plus or minus 25% jitter.
-//  - A fatal server error disconnects and does not auto-reconnect.
+//  - Reconnect backoff: 1, 2, 4, 8 s, capped at 16 s (PROTOCOL.md section 6),
+//    plus or minus 25% jitter. Retry indefinitely while the session is live.
+//  - A fatal server error, or an unknown-session rejection (4404), stops
+//    reconnecting and surfaces an error state; it never spins in a retry loop.
+//  - Client-to-server control vocabulary (PROTOCOL.md 3.1): hello,
+//    session_start, talk_start, talk_end, photo_meta, tag_moment,
+//    session_pause, session_resume, session_end, ping. The client never
+//    sends pong or any legacy REST-era control name.
 //
 //  Pure Foundation (URLSessionWebSocketTask). No third party code.
 //
@@ -42,6 +51,11 @@ public final class WSClient {
     /// Called whenever connectivity flips. True means the socket is up
     /// and hello has been sent.
     public var onConnectionChange: ((Bool) -> Void)?
+    /// Called when the server rejects the session (4404 / UNKNOWN_SESSION)
+    /// or sends a fatal error. Reconnect is stopped, so the app should
+    /// surface this state to the user instead of silently retrying.
+    /// Parameters: (code, message).
+    public var onSessionError: ((String, String) -> Void)?
 
     // MARK: - Observable state
 
@@ -65,6 +79,22 @@ public final class WSClient {
     public var stagedDropCount: Int {
         staging?.evictions ?? 0
     }
+
+    /// True once the server has answered hello with a welcome frame.
+    /// Reset on disconnect; set again on the next welcome.
+    public private(set) var handshakeCompleted: Bool = false
+
+    /// The session id the server echoed back in its welcome frame, when
+    /// available. Compare with sessionID to confirm the server registered
+    /// the phone-generated session this client sent in hello.
+    public private(set) var serverConfirmedSessionID: String?
+
+    /// Set when the server rejects the session (4404 / UNKNOWN_SESSION)
+    /// or sends a fatal error. Non-nil means reconnect is stopped and the
+    /// app must surface this instead of retrying. Cleared on the next
+    /// successful welcome.
+    public private(set) var sessionErrorCode: String?
+    public private(set) var sessionErrorMessage: String?
 
     /// The session this client is bound to, if connect was called.
     public var sessionID: UUID? {
@@ -130,6 +160,12 @@ public final class WSClient {
             currentSessionID = sessionID
             staging = OfflineStaging(sessionID: sessionID)
             sessionStartUptime = ProcessInfo.processInfo.systemUptime
+            // New session: drop any stale error / handshake state from the
+            // previous session so the UI starts clean.
+            sessionErrorCode = nil
+            sessionErrorMessage = nil
+            serverConfirmedSessionID = nil
+            handshakeCompleted = false
         }
         intentionalDisconnect = false
         let alreadyConnected = isConnected
@@ -144,6 +180,9 @@ public final class WSClient {
     public func disconnect() {
         lock.lock()
         intentionalDisconnect = true
+        // XCODE-VERIFY: after a session_end or a 4404, handshakeCompleted
+        // must read false so the UI cannot show a live-session state.
+        handshakeCompleted = false
         lock.unlock()
 
         reconnectTask?.cancel()
@@ -300,6 +339,10 @@ public final class WSClient {
         startReceiveLoop()
         startPingLoop()
 
+        // XCODE-VERIFY: the hello body MUST include "session_id" with the
+        // phone-generated UUID (ControlMessage.hello sets sessionID; inspect
+        // the JSON string before it goes on the wire), and it must match the
+        // session_id query parameter in the URL built above.
         let hello = ControlMessage.hello(
             sessionID: sessionID,
             deviceID: deviceID,
@@ -310,6 +353,10 @@ public final class WSClient {
             appVersion: appVersion
         )
         hasConnectedBefore = true
+        // XCODE-VERIFY: confirm this line prints on every connect and
+        // reconnect, and that the uuid matches the session armed in the UI.
+        NSLog("WSClient: hello sent, session_id=%@ source=%@ (reconnect=%@)",
+              sessionID.uuidString, audioSource, isReconnect ? "yes" : "no")
 
         if let helloData = try? hello.jsonData() {
             socketSend(.control(helloData)) { [weak self] error in
@@ -338,6 +385,11 @@ public final class WSClient {
         let wasConnected = isConnected
         lock.unlock()
         guard !intentional else { return }
+
+        lock.lock()
+        // The handshake is no longer valid once the socket is gone.
+        handshakeCompleted = false
+        lock.unlock()
 
         receiveTask?.cancel()
         receiveTask = nil
@@ -368,9 +420,11 @@ public final class WSClient {
         let attempt = reconnectAttempt
         lock.unlock()
 
-        // 1, 2, 4, 8, 16, 30, 30, ... seconds, plus or minus 25%
-        // jitter (PROTOCOL.md section 6 caps the backoff at 30 s).
-        let base = min(30.0, pow(2.0, Double(attempt - 1)))
+        // XCODE-VERIFY: delays must be 1, 2, 4, 8 s then hold at 16 s
+        // (PROTOCOL.md section 6), never drift back to the old 30 s cap.
+        // 1, 2, 4, 8, 16, 16, ... seconds, plus or minus 25% jitter
+        // (PROTOCOL.md section 6 caps the backoff at 16 s).
+        let base = min(16.0, pow(2.0, Double(attempt - 1)))
         let delay = base * Double.random(in: 0.75...1.25)
 
         reconnectTask = Task { [weak self] in
@@ -473,7 +527,7 @@ public final class WSClient {
     private func handle(_ message: URLSessionWebSocketTask.Message) {
         switch message {
         case .string(let text):
-            handleServerMessage(ServerMessage.parse(text))
+            handleServerMessage(ServerMessage.parse(text), rawText: text)
         case .data(let data):
             // The server speaks JSON control only. Binary downlink is
             // not part of protocol v1, so log and ignore.
@@ -483,13 +537,32 @@ public final class WSClient {
         }
     }
 
-    private func handleServerMessage(_ message: ServerMessage) {
+    private func handleServerMessage(_ message: ServerMessage, rawText: String) {
         switch message {
         case .welcome:
+            // XCODE-VERIFY: on every connect, console must show the welcome
+            // line below with the same session_id the hello line printed.
+            // If "confirmed" ever reads a different uuid, or the warning
+            // line prints, the server registered a different session than
+            // the phone armed: stop the demo and compare the hello JSON
+            // against the URL query string before touching code.
+            let confirmed = welcomeSessionID(from: rawText)
             lock.lock()
             lastPongAt = Date()
             reconnectAttempt = 0
+            handshakeCompleted = true
+            serverConfirmedSessionID = confirmed
+            sessionErrorCode = nil
+            sessionErrorMessage = nil
+            let expected = currentSessionID?.uuidString
             lock.unlock()
+            if let confirmed, let expected, confirmed != expected {
+                NSLog("WSClient: WARNING welcome confirmed session_id=%@ but phone sent session_id=%@",
+                      confirmed, expected)
+            } else {
+                NSLog("WSClient: welcome received, session confirmed session_id=%@",
+                      confirmed ?? "none-in-frame")
+            }
         case .pong(_, let serverTime):
             lock.lock()
             lastPongAt = Date()
@@ -498,7 +571,23 @@ public final class WSClient {
         case .captureNow(let photoID):
             onCaptureNow?(photoID)
         case .error(let code, let text, let fatal):
-            if fatal {
+            // XCODE-VERIFY: simulate a 4404 (or UNKNOWN_SESSION) error frame
+            // once against the Mac dev server: the console must show the
+            // session-rejected line, onSessionError must fire, and the client
+            // must NOT schedule any reconnect (no further hello lines).
+            if code == "4404" || code == "UNKNOWN_SESSION" {
+                // The phone's session is unknown server-side. The server
+                // auto-registers on hello now, so this should not fire; if
+                // it does, reconnecting would just spin forever against a
+                // session the server will never accept. Surface it and stop.
+                NSLog("WSClient: session rejected by server (%@: %@), stopping reconnect", code, text)
+                lock.lock()
+                sessionErrorCode = code
+                sessionErrorMessage = text
+                lock.unlock()
+                onSessionError?(code, text)
+                disconnect()
+            } else if fatal {
                 NSLog("WSClient: fatal server error %@: %@", code, text)
                 disconnect()
             } else {
@@ -507,6 +596,19 @@ public final class WSClient {
         case .unknown(let raw):
             NSLog("WSClient: unknown server message: %@", raw)
         }
+    }
+
+    /// Extracts the session_id the server echoes in its welcome frame.
+    /// Kept local to WSClient so WireProtocol's ServerMessage shape
+    /// stays untouched (another worker's tests assert on it).
+    private func welcomeSessionID(from text: String) -> String? {
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dict = object as? [String: Any],
+              let sessionID = dict["session_id"] as? String,
+              !sessionID.isEmpty
+        else { return nil }
+        return sessionID
     }
 
     /// Clock offset estimate: server time minus local time at the
