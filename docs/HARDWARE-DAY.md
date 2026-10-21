@@ -3,9 +3,9 @@
 OnRecord hardware plan. Demo glasses are borrowed. Ray-Ban Meta Display with Neural Band. Setup at home on home WiFi. Never do first time setup at the venue.
 
 Key facts:
-- Capture: Meta Wearables Device Access Toolkit (DAT) 1.0 via iPhone bridge app forked from Findr
-- Pin SDK 1.0.1 or later. 1.0.0 froze camera frames
-- Glasses mic path through toolkit is experimental. Phone mic is the deterministic audio path. Glasses stay on photo and display duty unless the mic proves stable
+- Capture: Extentos swift-glasses 2.8.0 via the iPhone bridge app (replaces the raw DAT 1.0 path; Extentos bundles DAT iOS 0.8.0 underneath)
+- Bridge app must be registered once per install in the Meta AI app (ExtentosConnectionPage, one-time deep-link), no auto fallback to raw DAT in the same process
+- Glasses mic path through the toolkit is experimental. Phone mic is the deterministic audio path. Glasses stay on photo and display duty unless the mic proves stable
 - Neural Band: pinch and swipe only. No custom gestures. No raw EMG
 - Glasses hold roughly 3 to 4 hours of use per charge. Charge only while docked in case. Never while worn
 - Shutter sound and LED cannot be suppressed. Pitch that as a privacy feature
@@ -58,9 +58,20 @@ Key facts:
 - [ ] Run firmware update
 - [ ] Enable Developer Mode on Nayan's phone
   - [ ] Meta AI app, Settings, App Info, tap version number 5 times
-- [ ] Register bridge app once via Meta AI callback
-- [ ] Verify app logs isDevMode == true before any session starts
+- [ ] Force-quit the Meta AI app before the bridge runs
+  - [ ] Still applies under Extentos: the Meta AI app and the bridge fight over the same L2CAP channel (PSM 129) and the flapping kills the camera stream. The app only re-opens Meta AI for the one-time registration deep-link
+- [ ] One-time registration in the bridge app (ExtentosConnectionPage)
+  - [ ] Open the bridge app, go to the connection page
+  - [ ] Tap register: this deep-links to the Meta AI app for confirmation
+  - [ ] Return via the callback URL; the app should then show the connection state progressing: notRegistered -> registered -> deviceDiscovered -> connecting -> active
+  - [ ] In the Meta AI app's App Connections list, confirm the bridge app is listed
+  - [ ] Confirm the ExtentosRegistration state log reaches ready, and the EXTENTOSProjectKey presence check passes (this replaces the old isDevMode == true log line; there is no dev-mode toggle check in the Extentos build)
 - [ ] Install frozen bridge build
+- [ ] On the first camera arm, expect the iOS system prompt to join the glasses' SoftAP Wi-Fi network
+  - [ ] This comes back on EVERY cold app launch; iOS never saves the network
+  - [ ] The bridge arms the camera at connect time, not on first shutter press, so the wait lands during setup
+  - [ ] First arm takes ~14 s end to end; allow the full 40 s first-frame wait before calling it dead (the stream dies at ~30 s on its own if the join fails)
+  - [ ] If the prompt never appears, the join never fired: check the two Wi-Fi entitlements actually shipped (see docs/DAT-WIFI-ENTITLEMENTS.md)
 - [ ] Re-sign note: free Apple ID signing expires in about 7 days
   - [ ] Install final build Oct 24, not earlier in the week
 
@@ -68,7 +79,9 @@ Key facts:
 
 Run in this order. Check off each. Any failure stops the line. Fix it, or phone-only plan becomes primary.
 
-- [ ] (1) isDevMode == true logged
+- [ ] (1) Registration and connection state healthy
+  - [ ] In the Xcode console confirm ExtentosRegistration reports ready, and after pairing the connection state reaches active
+  - [ ] Glasses device type reads back correctly (Ray-Ban Display on the borrowed pair)
 - [ ] (2) Session starts, photo returns
   - [ ] Measure photo trigger to bytes latency at each resolution
   - [ ] Lock the setting used for enrollment photos
@@ -142,7 +155,7 @@ InSight shipped with zero reconnect or keep-alive logic and died on drops mid ev
 ### What to watch in the Xcode console
 
 - The app pings the server every 15 s. A quiet console with no pong for 30 s means the link is dead: the app logs "WSClient: no pong for over 30 s, treating as drop" and starts reconnecting on its own.
-- Errors on the capture path are never silent. GlassesSource turns every SDK error into a health snapshot. If something fails, it says so in the console. Read it; do not guess.
+- Errors on the capture path are never silent. ExtentosGlassesSource turns every SDK error into a health snapshot. If something fails, it says so in the console. Read it; do not guess.
 
 ### If the stream drops mid demo
 

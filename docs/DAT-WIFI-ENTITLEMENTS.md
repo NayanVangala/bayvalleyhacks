@@ -1,3 +1,10 @@
+> STATUS 2026-10-21 (feature/extentos-bridge): this branch supersedes the
+> DAT-direct path with the Extentos bridge replacement. Extentos 2.8.0 bundles
+> DAT iOS 0.8.0, so the SoftAP transport analysis, both entitlements, and the
+> 40 s first-arm reasoning below still apply under Extentos: RealMetaTransport
+> calls the same DAT stack underneath. Original DAT-direct content is preserved
+> intact below the banner.
+
 # DAT Wi-Fi / SoftAP camera transport: the 30-second tell
 
 Source: Asger's reply on the meta-wearables-dat-ios repo (Aug 7), forwarded
