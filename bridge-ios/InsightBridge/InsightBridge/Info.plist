@@ -30,6 +30,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- Values from the Meta Developer Center (Wearables app page):
+	     Meta App ID, Client Token, Team ID, and the Meta AI callback scheme.
+	     DAMEnabled is set per the Extentos/Meta toolkit docs. -->
 	<key>MWDAT</key>
 	<dict>
 		<key>AppLinkURLScheme</key>
@@ -40,7 +43,17 @@
 		<string>$(META_CLIENT_TOKEN)</string>
 		<key>TeamID</key>
 		<string>$(DEVELOPMENT_TEAM)</string>
+		<key>DAMEnabled</key>
+		<true/>
 	</dict>
+	<!-- Fill EXTENTOS_APP_ID (reverse-DNS project identity) and EXTENTOSProjectKey
+	     via Extentos generateConnectionModule on the Mac. The project key belongs in
+	     a gitignored xcconfig; it is only stubbed here so the plist stays well-formed. -->
+	<key>EXTENTOS_APP_ID</key>
+	<string>com.nayan.insightbridge.extentos</string>
+	<key>EXTENTOSProjectKey</key>
+	<string>EXTENTOS_PROJECT_KEY_PLACEHOLDER</string>
+	<!-- Meta AI callback URL scheme for ExtentosRegistration.handleOpenURL -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -72,6 +85,8 @@
 	<string>InsightBridge uses Bluetooth to connect to your Ray-Ban Meta glasses so it can receive audio and photos during a session you start.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>InsightBridge uses the microphone as a backup audio source when glasses audio is unavailable, and to record short voice samples you choose to enroll.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>InsightBridge uses on-device and network speech recognition for voice commands, wake word detection, and transcribing session audio.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>InsightBridge uses the camera as a backup photo source when glasses photos are unavailable, and only during a session you start.</string>
 	<key>NSLocalNetworkUsageDescription</key>
