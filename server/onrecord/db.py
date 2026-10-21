@@ -400,16 +400,26 @@ class Store:
     # Sessions
     # ------------------------------------------------------------------
 
-    def create_session(self, title="", source="glasses", rehearsal=False) -> dict:
+    def create_session(self, title="", source="glasses", rehearsal=False, session_id=None) -> dict:
+        """Create a session row, optionally under an explicit id.
+
+        ``session_id`` lets the server register a phone-generated
+        session UUID (the bridge creates its own id; see
+        bridge-ios/PROTOCOL.md section 1) instead of minting one.
+        When omitted, a fresh ``uuid.uuid4().hex`` is used as before.
+        Both the sqlite and Postgres paths go through
+        ``_execute_write``, so the explicit id works on either
+        dialect.
+        """
         with self._lock:
-            session_id = _new_id()
+            new_id = str(session_id) if session_id else _new_id()
             now = _now_iso()
             self._execute_write(
                 "INSERT INTO sessions"
                 " (id, title, status, source, rehearsal, started_at, ended_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    session_id,
+                    new_id,
                     title or "",
                     "recording",
                     source or "glasses",
@@ -418,7 +428,7 @@ class Store:
                     None,
                 ),
             )
-            return self.get_session(session_id)
+            return self.get_session(new_id)
 
     def get_session(self, session_id) -> Optional[dict]:
         with self._lock:

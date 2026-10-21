@@ -13,6 +13,14 @@ fix it before the demo: the server is built against this document.
   `insight-net`. The session ID in the query string is created by the
   phone when the session is armed, and it survives reconnects and
   capture-source failover. One session ID, one conversation.
+- The server registers the session on the first `hello`: if the
+  session ID is unknown server-side, the server creates the session
+  row and its runtime state under that ID and replies `welcome`. The
+  phone never needs to create the session over REST first. A client
+  that prefers to pre-create the session may `POST /sessions` (or
+  `/api/sessions`) with `{"id": "<uuid>"}` or `{"session_id":
+  "<uuid>"}`; the server registers the session under that ID instead
+  of minting one.
 - Two frame kinds on the one connection:
   - Text frames carry JSON control messages (section 3).
   - Binary frames carry audio or photo payloads, each prefixed with
@@ -28,9 +36,15 @@ fix it before the demo: the server is built against this document.
    client does not block streaming on the handshake: binary frames
    may flow immediately after `hello`.
 3. The server replies with a `welcome` text frame, used for clock
-   offset estimation and connection confirmation.
+   offset estimation and connection confirmation. When the session ID
+   is new to the server, this is also the moment the server registers
+   the session (store row plus runtime state) under the phone's ID:
+   an unknown session ID in `hello` is never an error.
 4. If the server cannot accept the session, it replies with an `error`
-   frame with `fatal: true` and closes the connection.
+   frame with `fatal: true` and closes the connection. This happens
+   for an unsupported `protocol` version, a `hello` whose session ID
+   disagrees with the query string, or a `hello` with no session ID
+   at all.
 5. On a reconnect for the same session, the phone sends `hello` again
    with the same session ID (in the query string and in the message).
    The server treats it as a resume, not a new session.
@@ -280,8 +294,9 @@ frameSeq 1, captureTsMs 1000 encodes its header as:
 ### 5.1 Audio frames
 
 - Format: PCM16, 16 kHz, mono, little endian samples. No WAV header on
-  the wire; the payload is raw PCM. (WAV wrapping exists only for
-  enrollment uploads, section 7.)
+  the wire; the payload is raw PCM. Raw PCM with no WAV header is also
+  what the enrollment endpoint takes for the voice sample (section 7):
+  WAV-wrapped audio is rejected there with a 422.
 - Payload size: exactly 3200 bytes per frame, which is 100 ms of
   audio. Senders chunk the capture stream into 100 ms frames; the
   server may rely on the size.
@@ -358,23 +373,28 @@ because a flag is unexpected.
 
 Enrollment is plain HTTP, separate from the WebSocket.
 
-- Request: `POST http://<host>:8000/enroll` with content type
-  `multipart/form-data`. Default host is the same 192.168.2.1.
-- Form fields, all three required:
-  - `name`: text, the person's display name.
-  - `photo`: file, one JPEG portrait (same JPEG settings as photo
-    frames: 960 px long edge is fine, quality 0.7).
-  - `voice`: file, one WAV clip of the person speaking. The WAV is
-    produced by `EnrollmentAPI.wavWrapPCM(_:sampleRate:)` from PCM16
-    audio: a canonical 44-byte WAV header (RIFF/WAVE, PCM format 1,
-    mono, 16 bits per sample, byte rate = sampleRate times 2) followed
-    by the raw PCM. Record at 16 kHz to match the live pipeline.
+- Request: `POST http://<host>:8000/api/enroll` with content type
+  `application/json`. Default host is the same 192.168.2.1.
+  `POST /api/people/enroll` is an alias for the same endpoint.
+- JSON body, all three fields required:
+  - `name`: string, the person's display name.
+  - `photo_b64`: base64 of one JPEG portrait (same JPEG settings as
+    photo frames: 960 px long edge is fine, quality 0.7). Must decode
+    to bytes starting with the JPEG magic, or the server answers 422.
+  - `voice_b64`: base64 of the person's voice as RAW PCM16 mono,
+    16 kHz, little endian, with NO WAV header. A payload starting
+    with `RIFF` is rejected with a 422 ("strip the WAV header").
+    Must be non-empty, an even byte count, and at least 32000 bytes
+    (1 second of audio).
+  - Optional `notes`: string, free text stored with the person.
 - Success: a 2xx response with a JSON body containing the created
-  `person_id` and the stored `name`.
-- Failure: a non-2xx response with a JSON error body (`code`,
-  `message`, same shape as the WebSocket `error` message). A failed
-  enrollment stores nothing: all three fields are validated before
-  anything is written.
+  person record (`id` and the stored `name`).
+- Failure: 422 for a missing field, non-string payload, bad base64,
+  a non-JPEG photo, a WAV-wrapped voice sample, or a voice sample
+  that is empty, odd-length, or shorter than 1 second; 413 if the
+  photo or voice sample exceeds the size caps. A failed enrollment
+  stores nothing: all fields are validated before anything is
+  written.
 - Enrollment is idempotent by name only by operator discipline, not by
   protocol: enrolling the same name twice creates two records. Enroll
   each demo speaker once, on the setup day.

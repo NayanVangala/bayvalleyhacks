@@ -242,11 +242,85 @@ def test_correct_unknown_segment_is_404(client):
 # ---------------------------------------------------------------------------
 
 
-def test_ws_unknown_session_is_rejected(client):
-    with pytest.raises(WebSocketDisconnect) as excinfo:
-        with client.websocket_connect("/ingest/audio?session_id=no-such-session"):
-            pass
-    assert excinfo.value.code == 4404
+def test_ws_hello_registers_unknown_session(client):
+    # The phone generates its own session UUID (bridge-ios/PROTOCOL.md
+    # section 1): a hello carrying an id the server has never seen
+    # registers the session server-side instead of rejecting the hello.
+    fresh_id = "11111111-2222-3333-4444-555555555555"
+    with client.websocket_connect(f"/ingest/audio?session_id={fresh_id}") as ws:
+        ws.send_json({"type": "hello", "protocol": 1, "session_id": fresh_id})
+        message = ws.receive_json()
+    assert message.get("type") == "welcome", message
+    assert message.get("session_id") == fresh_id, message
+    assert message.get("ok") is True, message
+
+    # The session row now exists server-side under the phone's id.
+    resp = client.get(f"/api/sessions/{fresh_id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("id") == fresh_id
+
+
+def test_ws_hello_registers_unknown_session_without_query_param(client):
+    # Same registration when the id arrives only in the hello frame.
+    fresh_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    with client.websocket_connect("/ingest/audio") as ws:
+        ws.send_json({"type": "hello", "protocol": 1, "session_id": fresh_id})
+        message = ws.receive_json()
+    assert message.get("type") == "welcome", message
+    assert message.get("session_id") == fresh_id, message
+
+    resp = client.get(f"/api/sessions/{fresh_id}")
+    assert resp.status_code == 200, resp.text
+
+
+def test_ws_hello_without_session_id_is_rejected(client):
+    # A hello with no session identity at all is malformed: fatal
+    # BAD_PROTOCOL error, then the socket closes (same path as a
+    # session mismatch).
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ingest/audio") as ws:
+            ws.send_json({"type": "hello", "protocol": 1})
+            message = ws.receive_json()
+            assert message.get("type") == "error", message
+            assert message.get("fatal") is True, message
+            # The server closed the socket after the fatal error.
+            ws.receive_json()
+
+
+def test_ws_hello_session_mismatch_is_fatal_error(client):
+    # A hello naming a different session than the query string is a
+    # protocol violation: fatal error frame, then the socket closes.
+    session_id = _create_session(client, title="mismatch check")
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(f"/ingest/audio?session_id={session_id}") as ws:
+            ws.send_json(
+                {"type": "hello", "protocol": 1, "session_id": "other-session-id"}
+            )
+            message = ws.receive_json()
+            assert message.get("type") == "error", message
+            assert message.get("fatal") is True, message
+            # The server closed the socket after the fatal error.
+            ws.receive_json()
+
+
+def test_create_session_with_explicit_id(client):
+    # POST /sessions accepts a phone-generated id and registers the
+    # session under it instead of minting one.
+    explicit_id = "12345678-1234-1234-1234-123456789abc"
+    resp = client.post("/sessions", json={"id": explicit_id, "title": "explicit"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("id") == explicit_id, resp.json()
+
+    resp = client.post(
+        "/api/sessions", json={"session_id": "87654321-4321-4321-4321-cba987654321"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("id") == "87654321-4321-4321-4321-cba987654321", resp.json()
+
+    # Without an explicit id the server still mints one.
+    resp = client.post("/sessions", json={"title": "minted"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("id"), resp.json()
 
 
 def test_ws_audio_flow_produces_segment_and_ends_session(client):

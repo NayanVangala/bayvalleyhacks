@@ -208,6 +208,20 @@ def test_create_session_explicit_values(store):
     assert session["status"] == "recording"
 
 
+def test_create_session_explicit_id(store):
+    # The server registers phone-generated session UUIDs (hello
+    # auto-registration), so the store must honor an explicit id.
+    session = store.create_session(title="phone-made", session_id="phone-uuid-1")
+    assert session["id"] == "phone-uuid-1"
+    assert session["title"] == "phone-made"
+    assert store.get_session("phone-uuid-1")["id"] == "phone-uuid-1"
+
+    # Omitting the id still mints a fresh one.
+    minted = store.create_session()
+    assert minted["id"]
+    assert minted["id"] != "phone-uuid-1"
+
+
 def test_get_session_roundtrip_and_missing(store):
     created = _session(store, "Roundtrip")
     assert store.get_session(created["id"]) == created

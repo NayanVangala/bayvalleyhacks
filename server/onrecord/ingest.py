@@ -7,7 +7,8 @@ Run it with:
 HTTP surface:
 
 - GET  /healthz
-- POST /sessions  {title?, source?}
+- POST /sessions  {id?, title?, source?}   (id/session_id: register under an
+  explicit id, e.g. a phone-generated UUID; otherwise one is minted)
 - POST /sessions/{id}/arm | /start | /pause | /resume | /end
 - GET  /sessions/{id}/status
 - GET  /api/sessions
@@ -682,6 +683,49 @@ def create_app(
         runtime[session_id] = entry
         return entry
 
+    def _register_session(new_session_id: str, source: Any = None) -> Optional[dict]:
+        """Register a phone-generated session id server-side.
+
+        The phone creates the session UUID when the session is armed
+        (bridge-ios/PROTOCOL.md section 1) and the server has never
+        seen it: mint the store row with that explicit id and build
+        the runtime entry, returning the entry (already stored in
+        ``runtime``). Returns None when the store is unavailable or
+        cannot take an explicit id, in which case the caller must
+        fail the handshake instead of running the session under a
+        mismatched identity.
+        """
+        if store is None:
+            return None
+        creator = getattr(store, "create_session", None)
+        if not callable(creator):
+            return None
+        try:
+            created = creator(
+                title="",
+                source=source or "glasses",
+                session_id=str(new_session_id),
+            )
+        except TypeError:
+            # The store cannot take an explicit id: registration
+            # fails rather than silently running under a different id.
+            return None
+        except Exception:
+            return None
+        session = _as_dict(created)
+        stored_id = session.get("id") or session.get("session_id")
+        if stored_id is None or str(stored_id) != str(new_session_id):
+            # The store ignored the explicit id: do not run the
+            # session under a mismatched identity.
+            return None
+        session["id"] = str(new_session_id)
+        try:
+            entry = _make_entry(str(new_session_id), session)
+        except Exception:
+            return None
+        runtime[str(new_session_id)] = entry
+        return entry
+
     def _make_entry(session_id: str, session: Optional[dict]) -> dict:
         """Build the runtime entry for one session.
 
@@ -1089,20 +1133,36 @@ def create_app(
         body = await _json_body(request)
         title = body.get("title")
         source = body.get("source", body.get("capture_source"))
+        # Explicit id: the phone generates its own session UUID
+        # (bridge-ios/PROTOCOL.md section 1), so a client may register
+        # that id up front instead of using the minted one.
+        explicit_id = body.get("id", body.get("session_id"))
+        explicit_id = str(explicit_id).strip() if explicit_id is not None else ""
         creator = getattr(store, "create_session", None)
         if not callable(creator):
             raise HTTPException(status_code=503, detail="store.create_session is unavailable")
-        created = _call_variants(
-            creator,
-            [
-                ((), {"title": title, "source": source}),
-                ((title, source), {}),
-                (({"title": title, "source": source},), {}),
-                ((), {"title": title}),
-                ((title,), {}),
-                ((), {}),
-            ],
-        )
+        created: Any = None
+        have_created = False
+        if explicit_id:
+            try:
+                created = creator(title=title, source=source, session_id=explicit_id)
+                have_created = True
+            except TypeError:
+                # The store cannot take an explicit id: fall back to a
+                # generated id below instead of failing the request.
+                have_created = False
+        if not have_created:
+            created = _call_variants(
+                creator,
+                [
+                    ((), {"title": title, "source": source}),
+                    ((title, source), {}),
+                    (({"title": title, "source": source},), {}),
+                    ((), {"title": title}),
+                    ((title,), {}),
+                    ((), {}),
+                ],
+            )
         session = _as_dict(created)
         session_id = session.get("id") or session.get("session_id")
         if session_id is None and isinstance(created, str):
@@ -1509,17 +1569,17 @@ def create_app(
                     runtime[str(session_id)] = entry
                 except Exception:
                     entry = None
-        if entry is None or not session_id:
-            # Unknown session: PROTOCOL.md section 3.2 has an
-            # UNKNOWN_SESSION error for this, and the session must
-            # exist server side (created over REST) before the socket
-            # is accepted. The close code is pinned by the ingest
-            # tests.
-            await websocket.close(code=4404)
-            return
-
-        session_id = str(session_id)
-        controller = entry.get("controller")
+        # The phone generates its own session UUID when the session is
+        # armed (bridge-ios/PROTOCOL.md section 1), so the id in the
+        # query string is usually unknown server-side on first
+        # connect. An unknown or missing session id no longer closes
+        # the socket here: the hello frame registers the session
+        # server-side (store row + runtime entry). Only a malformed
+        # hello (unsupported protocol, missing session_id, or an id
+        # that disagrees with the query string) is rejected, with a
+        # fatal BAD_PROTOCOL error, after hello arrives.
+        session_id = str(session_id) if session_id else None
+        controller = entry.get("controller") if entry is not None else None
         await websocket.accept()
 
         # One live socket per session. A reconnect with the same
@@ -1527,9 +1587,14 @@ def create_app(
         # loop sees its connection token go stale and stops, so two
         # sockets can never interleave frames into one controller.
         # The session, controller, and timeline all carry on.
-        entry["conn_seq"] = int(entry.get("conn_seq") or 0) + 1
-        my_conn = entry["conn_seq"]
-        entry["connected"] = True
+        if entry is not None:
+            entry["conn_seq"] = int(entry.get("conn_seq") or 0) + 1
+            my_conn = entry["conn_seq"]
+            entry["connected"] = True
+        else:
+            # No session yet: hello registers it below. Nothing
+            # server-side can supersede this socket until then.
+            my_conn = 0
         photo_pending = False
         conn_hello = False
         ended_cleanly = False
@@ -1699,7 +1764,7 @@ def create_app(
                 continue
             if message.get("type") == "websocket.disconnect":
                 break
-            if entry.get("conn_seq") != my_conn:
+            if entry is not None and entry.get("conn_seq") != my_conn:
                 # Superseded by a newer connection for this session.
                 break
 
@@ -1726,6 +1791,16 @@ def create_app(
                     control = payload.get("type")
                     state = _state_str(controller)
 
+                    if entry is None and control != "hello":
+                        # The session is not registered yet: hello is
+                        # the only frame that can arrive first
+                        # (PROTOCOL.md section 2).
+                        await send_error(
+                            "BAD_PROTOCOL",
+                            "hello must be the first frame on a new session connection",
+                        )
+                        continue
+
                     # A control message naming a different session is
                     # a protocol violation for that message only.
                     msg_sid = payload.get("session_id")
@@ -1745,12 +1820,11 @@ def create_app(
                         hello_sid = payload.get("session_id") or payload.get(
                             "resume_session_id"
                         )
-                        if proto != 1 or (
-                            hello_sid is not None and str(hello_sid) != session_id
-                        ):
+                        hello_sid = str(hello_sid) if hello_sid is not None else None
+                        if proto != 1:
                             await send_error(
                                 "BAD_PROTOCOL",
-                                "hello rejected: unsupported protocol or session mismatch",
+                                "hello rejected: unsupported protocol",
                                 fatal=True,
                             )
                             try:
@@ -1759,6 +1833,60 @@ def create_app(
                                 pass
                             ended_cleanly = True
                             break
+                        if hello_sid is None:
+                            # Genuinely malformed hello: no session
+                            # identity at all. Rejected the same way
+                            # as a mismatched session id: a fatal
+                            # BAD_PROTOCOL error, then close.
+                            await send_error(
+                                "BAD_PROTOCOL",
+                                "hello rejected: missing session_id",
+                                fatal=True,
+                            )
+                            try:
+                                await websocket.close()
+                            except Exception:
+                                pass
+                            ended_cleanly = True
+                            break
+                        if session_id is not None and hello_sid != session_id:
+                            await send_error(
+                                "BAD_PROTOCOL",
+                                "hello rejected: session mismatch",
+                                fatal=True,
+                            )
+                            try:
+                                await websocket.close()
+                            except Exception:
+                                pass
+                            ended_cleanly = True
+                            break
+                        if entry is None:
+                            # Unknown session id: the phone generated
+                            # it (PROTOCOL.md section 1), so register
+                            # it server-side now (store row + runtime
+                            # entry) instead of rejecting the hello.
+                            hello_source = payload.get("source") or payload.get(
+                                "audio_source"
+                            )
+                            entry = _register_session(hello_sid, source=hello_source)
+                            if entry is None:
+                                await send_error(
+                                    "SERVER_BUSY",
+                                    "session registration unavailable",
+                                    fatal=True,
+                                )
+                                try:
+                                    await websocket.close()
+                                except Exception:
+                                    pass
+                                ended_cleanly = True
+                                break
+                            session_id = hello_sid
+                            controller = entry.get("controller")
+                            entry["conn_seq"] = int(entry.get("conn_seq") or 0) + 1
+                            my_conn = entry["conn_seq"]
+                            entry["connected"] = True
                         if entry.get("hello_seen") and entry.get("hello_conn") != my_conn:
                             # Reconnect for the same session: a resume,
                             # never a new session (PROTOCOL.md 2 and 6).
@@ -2016,6 +2144,14 @@ def create_app(
 
                 elif bytes_frame is not None:
                     data = bytes(bytes_frame)
+                    if entry is None:
+                        # No session registered yet (hello has not
+                        # arrived): binary frames have nowhere to go.
+                        await send_error(
+                            "BAD_PROTOCOL",
+                            "binary frame received before hello on this connection",
+                        )
+                        continue
                     if len(data) >= 2 and data[:2] == BRIDGE_MAGIC:
                         # Bridge frame (PROTOCOL.md section 4). This
                         # check comes before the legacy photo_pending
@@ -2101,6 +2237,10 @@ def create_app(
                     "BAD_PROTOCOL", str(exc) or exc.__class__.__name__
                 )
 
+        if entry is None:
+            # The socket went away before hello registered a session:
+            # nothing server-side to mark disconnected.
+            return
         entry["connected"] = False
         if not ended_cleanly and entry.get("conn_seq") == my_conn:
             # Dropped without session_end: the session stays open on
