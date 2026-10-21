@@ -96,44 +96,21 @@ Run in this order. Check off each. Any failure stops the line. Fix it, or phone-
 
 Run all three on the setup day, on the real bridge build from Oct 24, on a real phone. The app, not the simulator. Open Xcode, Window, Devices and Simulators, open the device console (or run with the phone tethered and read the console in Xcode's Debug area). Success for each fix means a specific line in the Xcode console and a specific result server side. Any failure stops the line: rebuild, reinstall, re-verify.
 
-### Fix A: hello with phone-generated UUID gets welcome, no 4404
+- [ ] (a) hello with phone-generated UUID gets welcome, no 4404
+  - [ ] Arm a session in the app. In the Xcode console confirm the first text frame the phone sends is hello and its session_id matches the phone-generated UUID in the ws:// query string
+  - [ ] Confirm the server replies with welcome carrying the same session_id and ok: true. If welcome carries a different session_id, the app let the server invent it: fail the line, the next reconnect would resurrect a ghost session
+  - [ ] Failure looks like: the socket closes immediately with code 4404, no welcome arrives, or "WSClient: receive failed" in the console. Cause is the session was never created server side, or the UUID in the query string and the hello body do not match. Fix: the phone must POST /api/sessions (body {"session_id": "<uuid>"}) before opening the socket, with the same UUID in the REST body, the query string, and hello
 
-What the fix does: the phone generates the session UUID itself, registers it over REST with POST /api/sessions (JSON body {"session_id": "<uuid>"}), THEN opens the WebSocket at ws://<host>:8000/ingest/audio?session_id=<same uuid> and sends hello as the first frame. The server only accepts the socket when the session already exists server side; before this fix, nobody created it, so every connect died with code 4404.
+- [ ] (b) enrollment POSTs JSON base64 raw PCM (no WAV) to /api/enroll
+  - [ ] In Xcode confirm the request is POST http://<host>:8000/api/enroll with Content-Type application/json. Not multipart, and the route is /api/enroll, not /enroll (posting to /enroll returns 404)
+  - [ ] Confirm the JSON body has exactly name, photo_b64 (JPEG portrait), and voice_b64 which is base64 of raw PCM16 16 kHz mono with no WAV header. The 44-byte RIFF/WAVE wrapper from wavWrapPCM must not be in this path. Verify the first four decoded bytes are audio samples, not "RIFF"
+  - [ ] Confirm a 2xx response with person_id and the stored name in the JSON body, and that the person shows up in GET /api/people
+  - [ ] Failure looks like: 422 "enroll requires name, photo_b64 and voice_b64" (wrong keys or null field), 422 invalid base64, 413 payload too large, 503 enrollment service unavailable (restart the server and re-enroll). A WAV-wrapped voice_b64 passes base64 validation, so that failure shows up later as a bad voice print, not an error
 
-What to observe:
-- Xcode console: the socket connects and no "WSClient: receive failed" line follows. The server replies with welcome; the session_id in welcome echoes the phone's UUID.
-- Server side: POST /api/sessions returns the session containing your UUID before the socket ever opens.
-
-What failure looks like:
-- "WSClient: receive failed" with close code 4404, or the socket closing instantly after connect. Meaning: the phone opened the socket for a session the server never registered. Check that POST /api/sessions runs before the socket open and passes the same UUID in the body and the query string, and that hello's session_id matches the query string UUID.
-- A welcome whose session_id does NOT match the phone's UUID. Meaning: the app let the server invent the session id. Fail the line; the next reconnect would resurrect a ghost session.
-
-### Fix B: enrollment POSTs JSON base64 raw PCM (no WAV) to /api/enroll
-
-What the fix does: the Swift enrollment screen posts JSON to POST http://<host>:8000/api/enroll with exactly three fields: name (text), photo_b64 (JPEG portrait, base64), voice_b64 (base64 of RAW PCM16 16kHz mono with NO 44-byte WAV header). Before this fix the app sent multipart form data with a WAV-wrapped voice clip, which the server no longer expects.
-
-What to observe:
-- Server responds 2xx with JSON containing person_id and the stored name.
-- Xcode: the enrollment screen shows the person confirmed.
-
-What failure looks like:
-- 422 "enroll requires name, photo_b64 and voice_b64". A field is missing or null. Check the key names are exactly photo_b64 and voice_b64.
-- 422 "invalid base64 payload". The base64 string is malformed. Do not URL-encode it.
-- 413 "enrollment voice sample too large" or "enrollment photo too large". Trim the clip or shrink the photo and re-enroll.
-- 503 "enrollment service is unavailable". The laptop's enrollment model did not load. Restart the server. Do not retry the enrollment until the server is healthy.
-- Silent failure: 2xx, but the voice blob carries a WAV header (old build). The header gets embedded as if it were speech and voice matching silently degrades. If the install predates the fix, reinstall the Oct 24 build and re-enroll the speaker.
-
-### Fix C: PREROLL flag 0x01 on the wire, partial pre-roll flagged not padded
-
-What the fix does: pre-roll audio drained at talk start is sent as ordinary audio frames for the segment's seg_idx with the PREROLL bit 0x01 set in the binary header byte. The pre-roll buffer rarely holds an exact multiple of 100 ms; the last partial frame is sent short (not padded with silence), per PROTOCOL.md 5.1. Before this fix the app sent pre-roll with flag 0x04 and padded partial frames.
-
-What to observe:
-- Talk, release, and check the dashboard: the transcript covers speech from BEFORE the button press. That lead-in is the pre-roll working.
-- Server side, the segment's first frames for seg_idx 0 carry flags with bit 0x01 set, in frameSeq order, then talk_start/talk_end bracket them.
-
-What failure looks like:
-- Pre-roll frames with flag 0x04 instead of 0x01. The old Swift build is installed. Rebuild from main. Note the server accepts 0x04 as a fallback hint, so the demo may still look fine, but the wire no longer matches PROTOCOL.md, which is the pinned spec.
-- Partial frames padded to 3200 bytes with silence. Symptom: a dead lead-in in the transcript and drifting timestamps. Check the pre-roll drain path emits the short frame as captured, with the 0x01 flag, and never pads.
+- [ ] (c) PREROLL flag is 0x01 on the wire, partial pre-roll flagged not padded
+  - [ ] Hold push-to-talk and confirm the pre-roll frames drained at talk start carry flags 0x01 (bit 0) in the 16-byte binary header. Not 0x04, not 0x00
+  - [ ] Press talk within a second of arming, while the 10 s buffer has not filled. Confirm the sealed segment still closes and the server records preroll_partial true with preroll_s under 10, and the audio is intact with no leading silence padding
+  - [ ] Failure looks like: pre-roll frames with flags 0x04 (the old Swift assignment) or 0x00 (flag never set). The server treats flags as informational, so this will not hard fail, it just mislabels timing. A padded partial pre-roll shows up as preroll_s reporting a full 10 s when talk started early. Fix: one owner for the flag constant in the Swift code, and verify the state machine path, not just the encoder
 
 ## 5. BATTERY DISCIPLINE
 
@@ -155,7 +132,41 @@ What failure looks like:
 - [ ] If glasses die mid demo, switch to phone-only mode
   - [ ] Phone-only switch is a rehearsed feature, not an apology
 
-## 7. RETURN CHECKLIST (Oct 25 night or Oct 26)
+## 7. STREAM FAILURE HANDLING (InSight lessons)
+
+InSight shipped with zero reconnect or keep-alive logic and died on drops mid event. Our stack answers every gap they had. The job on setup day is to verify the answers actually work, not to rebuild them.
+
+### What to watch in the Xcode console
+
+- The app pings the server every 15 s. A quiet console with no pong for 30 s means the link is dead: the app logs "WSClient: no pong for over 30 s, treating as drop" and starts reconnecting on its own.
+- Errors on the capture path are never silent. GlassesSource turns every SDK error into a health snapshot. If something fails, it says so in the console. Read it; do not guess.
+
+### If the stream drops mid demo
+
+1. Do nothing for 30 seconds. The app retries with backoff (1, 2, 4, 8, 16 s, jittered, no attempt limit) using the SAME session UUID, so the server resumes the session instead of starting a new one. Do not re-arm the session. Do not kill the app.
+2. Capture keeps running on the phone while disconnected. Unsent frames stage to the 500 MB offline ring and replay oldest first after the reconnect, with live frames queued behind them. The server dedupes on session plus segIdx plus frameSeq, so a drop costs seconds of liveness, not the recording.
+3. If the drop lasts past ~30 s of retries: switch to phone-only capture. The socket, session ID and session clock carry on; only the audio source changes. This is the rehearsed kill-switch drill in section 4, item 7.
+4. If the server itself is unreachable (no pongs ever, POST /api/sessions times out): the laptop slept or the process died. Wake the laptop, restart the server, confirm POST /api/sessions still answers for your UUID. The phone reconnects on its own.
+5. If pairing breaks at the venue: do not re-pair. Phone-only is the plan. Re-pairing at the venue is a non-goal per the fallback doc.
+
+### Thermal and battery discipline
+
+- Glasses hold 3 to 4 hours per charge (section 5). Heat throttles the radio and CPU, so keep the glasses shaded between demo bursts, dock them in the plugged-in case to cool, and never charge them while they are hot. Stills only; video is banned for this reason.
+- Keep the laptop awake. A sleeping laptop kills pings and the socket dies on both ends. Disable sleep on AC power for the whole event day.
+- Keep the iPhone on the 20,000 mAh power bank, tethered, Low Power Mode off (section 5).
+- If the frames feel hot during a session, dock them and go phone-only until they cool.
+
+### Drills to run on setup day (add to section 4)
+
+- [ ] Wi-Fi drop during replay: disconnect the phone Wi-Fi for 60 s mid conversation, reconnect, and confirm the transcript has no gap and no duplicated segments
+- [ ] Mid-demo drop drill: say nothing about the tech, tap to phone-only mode, keep the same session going. A rehearsed feature, not an apology. Live in under 30 s per the section 4 drill
+- [ ] Watch the offline staging eviction counter in the app during the drills. If it moves, the 500 MB ring filled and the oldest audio is gone for good
+- [ ] Hinge close equals teardown: folding the glasses ends the session path. Reopen and re-arm. Do not expect the old socket to resume after a fold
+- [ ] Wrong-audio-source check: verify the runtime 16 kHz assert fires on the audio path, and that the HFP 8 kHz fallback is not silently active. If the glasses mic ever produces 8 kHz frames, phone mic takes over. This is the exact fiasco that killed InSight's audio
+- [ ] Long-segment guard: a crash between talk_start and talk_end must not leave a segment open forever. Confirm the server force-seals an idle segment after 5 minutes
+- [ ] One live socket per session: a reconnect supersedes the old socket, so never run two clients into the same session UUID
+
+## 8. RETURN CHECKLIST (Oct 25 night or Oct 26)
 
 - [ ] Back up any of the friend's remaining data, untouched
 - [ ] Unpair from Nayan's phone only if the friend wants it
@@ -167,37 +178,3 @@ What failure looks like:
   - [ ] Neural Band charger if separate
 - [ ] Send thank-you
 - [ ] Send photo of the glasses working at the event
-
-## 8. XCODE VERIFICATION OF THE THREE WIRE FIXES
-
-Do this on setup day in Xcode with the server running on the laptop, before the glasses go on. All three must pass before the first live glasses session. Any failure stops the line.
-
-- [ ] (a) hello with phone-generated UUID gets welcome, no 4404
-  - [ ] Arm a session in the app. In the Xcode console confirm the first text frame is hello and its session_id matches the phone-generated UUID in the ws:// query string
-  - [ ] Confirm the server replies with welcome carrying the same session_id and ok: true
-  - [ ] In the server log confirm the session exists server side before the socket opened: either the phone POSTed /api/sessions first, or the server registered the session on hello, whichever fix landed
-  - [ ] Failure looks like: the socket closes immediately with code 4404, no welcome arrives, and the log shows UNKNOWN_SESSION. Cause is the session was never created server side, or the UUID in the query string and the hello body do not match. Fix: make the session-create REST call run before the socket opens, with the same UUID in both places
-
-- [ ] (b) enrollment POSTs JSON base64 raw PCM to /api/enroll
-  - [ ] In Xcode confirm the request is POST http://<host>:8000/api/enroll with Content-Type application/json. Not multipart, and the route is /api/enroll, not /enroll
-  - [ ] Confirm the JSON body has name, photo_b64 (JPEG), and voice_b64 which is raw PCM16 16 kHz mono with no WAV header. The 44-byte RIFF/WAVE wrapper from wavWrapPCM must not be in this path
-  - [ ] Confirm a 2xx response with person_id and name in the JSON body, and the person shows up in GET /api/people
-  - [ ] Failure looks like: 422 "enroll requires name, photo_b64 and voice_b64" (wrong keys), 422 invalid base64, 413 payload too large, or 404 from posting to /enroll. A WAV-wrapped voice_b64 passes base64 validation, so the failure shows up later as a bad voice print instead of an error. Fix: verify the raw PCM path in EnrollmentAPI and confirm the first four decoded bytes are audio samples, not "RIFF"
-
-- [ ] (c) PREROLL flag is 0x01 on the wire, partial pre-roll flagged not padded
-  - [ ] Hold push-to-talk and confirm the pre-roll frames drained at talk start carry flags 0x01 (bit 0) in the 16-byte binary header. Not 0x04, not 0x00
-  - [ ] Press talk within a second of arming, while the 10s buffer has not filled. Confirm the sealed segment still closes and the server records preroll_partial true with preroll_s under 10, and the audio is intact with no leading silence padding
-  - [ ] Failure looks like: pre-roll frames with flags 0x04 (the old Swift assignment) or 0x00 (flag never set). The server treats flags as informational, so this will not hard fail, it just mislabels timing. A padded partial pre-roll looks like preroll_s reporting a full 10.0s when talk started early. Fix: one owner for the flag constant, and verify the state machine path, not just the encoder
-
-## 9. FAILURE HANDLING
-
-Written from the protocol spec and first principles. The InSight study notes (/tmp/insight-applied.md) never appeared, so this section is grounded in PROTOCOL.md section 6 and the review findings, not the study. The rules below are the ones to run.
-
-- [ ] Keep-alive is on: the app pings at least every 15s. No pong within 30s means the socket is dead, do not keep talking into it
-- [ ] Reconnect backoff is automatic: 1s, 2s, 4s, 8s, capped at 16s with jitter, no attempt limit while the session is live. On reconnect the app re-sends hello with the same session UUID and the server resumes, not restarts
-- [ ] Offline staging covers dead air: while disconnected the app writes frames to the 500 MB disk ring in send order. After the handshake it replays oldest first and live frames wait behind replay. Watch the eviction counter in the app; if it moves, the ring filled and the oldest audio is gone for good
-- [ ] Mid-demo drop drill: say nothing about the tech, tap to phone-only mode, keep the same session going. This is a rehearsed feature, not an apology, and it must be live in under 30s per the section 4 drill
-- [ ] Hinge close equals teardown: folding the glasses ends the session path. Reopen, re-pair if needed, re-arm. Do not expect the old socket to resume after a fold
-- [ ] Battery and heat: glasses live in the plugged-in case whenever not on a face. Charge to 100% the night before. Event day is demo bursts only, top up at lunch and at 5pm. If the frames feel hot, dock them and go phone-only until they cool. Never charge while worn
-- [ ] Friend's phone Bluetooth stays off at the venue, or the phone stays home, so it cannot steal the glasses connection. One live socket per session: a reconnect supersedes the old socket, so do not run two clients into the same session UUID
-- [ ] If the glasses mic path degrades, the phone mic is the deterministic fallback. Capture-source failover is not a reconnect: session ID, frameSeq, and the session clock all carry on
